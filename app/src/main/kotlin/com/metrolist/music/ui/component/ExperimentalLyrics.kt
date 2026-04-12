@@ -51,6 +51,7 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
@@ -107,6 +108,7 @@ import com.metrolist.music.constants.ShowIntervalIndicatorKey
 import com.metrolist.music.constants.TranslateLanguageKey
 import com.metrolist.music.constants.TranslateModeKey
 import com.metrolist.music.db.entities.LyricsEntity.Companion.LYRICS_NOT_FOUND
+import com.metrolist.music.lyrics.LyricsResyncHelper
 import com.metrolist.music.lyrics.LyricsTranslationHelper
 import com.metrolist.music.lyrics.LyricsUtils.findActiveLineIndices
 import com.metrolist.music.lyrics.lyricsTextLooksSynced
@@ -120,6 +122,7 @@ import com.metrolist.music.utils.rememberEnumPreference
 import com.metrolist.music.utils.rememberPreference
 import com.metrolist.music.viewmodels.LyricsViewModel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
@@ -610,6 +613,39 @@ fun ExperimentalLyrics(
             }
         }
 
+        val latestShowLyrics by rememberUpdatedState(showLyrics)
+        val latestResyncLyrics by rememberUpdatedState(
+            newValue = {
+                flingJob?.cancel()
+                var target = scrollTargetIndex
+                if (target == -1) {
+                    target =
+                        findActiveLineIndices(
+                            lines,
+                            currentPositionState + (currentSong?.song?.lyricsOffset ?: 0),
+                        ).maxOrNull() ?: -1
+                }
+                if (target != -1) {
+                    val listIdx =
+                        mergedLyricsList.indexOfFirst {
+                            it is LyricsListItem.Line && it.index == target
+                        }.coerceAtLeast(0)
+                    userManualOffset += positions[listIdx] ?: 0f
+                    deferredCurrentLineIndex = target
+                    scrollTargetIndex = target
+                }
+                isAutoScrollEnabled = true
+            },
+        )
+
+        LaunchedEffect(Unit) {
+            LyricsResyncHelper.resyncTrigger.collect {
+                if (latestShowLyrics) {
+                    latestResyncLyrics()
+                }
+            }
+        }
+
         LyricsTranslationHeader(
             status = translationStatus,
             modifier = Modifier.zIndex(1f).padding(top = 56.dp)
@@ -786,18 +822,7 @@ fun ExperimentalLyrics(
             modifier = Modifier.align(Alignment.BottomCenter),
             isAutoScrollEnabled = isAutoScrollEnabled, isSynced = isSynced,
             isSelectionModeActive = isSelectionModeActive, anySelected = selectedIndices.isNotEmpty(),
-            onSyncClick = {
-                flingJob?.cancel()
-                var target = scrollTargetIndex
-                if (target == -1) target = findActiveLineIndices(lines, currentPositionState + (currentSong?.song?.lyricsOffset ?: 0)).maxOrNull() ?: -1
-                if (target != -1) {
-                    val listIdx = mergedLyricsList.indexOfFirst { it is LyricsListItem.Line && it.index == target }.coerceAtLeast(0)
-                    userManualOffset += (positions[listIdx] ?: 0f)
-                    deferredCurrentLineIndex = target
-                    scrollTargetIndex = target
-                }
-                isAutoScrollEnabled = true
-            },
+            onSyncClick = latestResyncLyrics,
             onCancelSelection = { isSelectionModeActive = false; selectedIndices.clear() },
             onShareSelection = {
                 val text = selectedIndices.sorted().mapNotNull { lines.getOrNull(it)?.text }.joinToString("\n")
