@@ -1,3 +1,8 @@
+/**
+ * Metrolist Project (C) 2026
+ * Licensed under GPL-3.0 | See git history for contributors
+ */
+
 package com.metrolist.music.ui.screens.settings
 
 import androidx.compose.foundation.layout.Arrangement
@@ -34,6 +39,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
@@ -85,12 +91,12 @@ fun SonosTestScreen(
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp)) {
                     Text(
-                        "Dispositivi recenti",
+                        stringResource(R.string.sonos_devices_recent),
                         style = MaterialTheme.typography.titleMedium,
                     )
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "Tap per riconnettere senza SSDP",
+                        stringResource(R.string.sonos_devices_recent_hint),
                         style = MaterialTheme.typography.bodySmall,
                     )
                     Spacer(Modifier.height(8.dp))
@@ -110,7 +116,7 @@ fun SonosTestScreen(
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp)) {
                 Text(
-                    "Discovery",
+                    stringResource(R.string.sonos_discovery_title),
                     style = MaterialTheme.typography.titleMedium,
                 )
                 Spacer(Modifier.height(8.dp))
@@ -121,7 +127,7 @@ fun SonosTestScreen(
                     Button(
                         onClick = { viewModel.startDiscovery() },
                         enabled = discoveryState !is DiscoveryState.Searching,
-                    ) { Text("Cerca Sonos") }
+                    ) { Text(stringResource(R.string.sonos_search_button)) }
                     if (discoveryState is DiscoveryState.Searching) {
                         CircularProgressIndicator(modifier = Modifier.size(20.dp))
                     }
@@ -129,12 +135,12 @@ fun SonosTestScreen(
                 Spacer(Modifier.height(4.dp))
                 Text(
                     text = when (val s = discoveryState) {
-                        DiscoveryState.Idle -> "Nessuna ricerca in corso."
-                        DiscoveryState.Searching -> "Ricerca SSDP in corso..."
+                        DiscoveryState.Idle -> stringResource(R.string.sonos_discovery_idle)
+                        DiscoveryState.Searching -> stringResource(R.string.sonos_discovery_searching)
                         is DiscoveryState.Found ->
-                            if (s.count == 0) "Nessun device trovato. Prova di nuovo o inserisci IP manualmente."
-                            else "Trovati ${s.count} device."
-                        is DiscoveryState.Error -> "Errore: ${s.message}"
+                            if (s.count == 0) stringResource(R.string.sonos_discovery_none_found)
+                            else stringResource(R.string.sonos_discovery_found, s.count)
+                        is DiscoveryState.Error -> stringResource(R.string.sonos_error_prefix, s.message)
                     },
                     style = MaterialTheme.typography.bodySmall,
                 )
@@ -143,7 +149,7 @@ fun SonosTestScreen(
 
                 // Manual IP fallback (bypasses SSDP)
                 Text(
-                    "IP manuale (bypassa SSDP)",
+                    stringResource(R.string.sonos_manual_ip_label),
                     style = MaterialTheme.typography.labelMedium,
                 )
                 Spacer(Modifier.height(4.dp))
@@ -161,7 +167,7 @@ fun SonosTestScreen(
                     Button(
                         onClick = { if (manualIp.isNotBlank()) viewModel.addDeviceByIp(manualIp) },
                         enabled = manualIp.isNotBlank() && discoveryState !is DiscoveryState.Searching,
-                    ) { Text("Aggiungi") }
+                    ) { Text(stringResource(R.string.sonos_add_button)) }
                 }
             }
         }
@@ -173,7 +179,7 @@ fun SonosTestScreen(
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp)) {
                     Text(
-                        "Dispositivi",
+                        stringResource(R.string.sonos_devices_title),
                         style = MaterialTheme.typography.titleMedium,
                     )
                     Spacer(Modifier.height(8.dp))
@@ -198,11 +204,11 @@ fun SonosTestScreen(
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp)) {
                     Text(
-                        "Riproduzione",
+                        stringResource(R.string.sonos_playback_title),
                         style = MaterialTheme.typography.titleMedium,
                     )
                     Text(
-                        "Connesso a ${connectedDevice.displayName}",
+                        stringResource(R.string.sonos_connected_to, connectedDevice.displayName),
                         style = MaterialTheme.typography.bodySmall,
                     )
                     Spacer(Modifier.height(12.dp))
@@ -210,7 +216,7 @@ fun SonosTestScreen(
                     OutlinedTextField(
                         value = testUrl,
                         onValueChange = { testUrl = it },
-                        label = { Text("URL audio") },
+                        label = { Text(stringResource(R.string.sonos_audio_url_label)) },
                         modifier = Modifier.fillMaxWidth(),
                         singleLine = true,
                     )
@@ -219,17 +225,17 @@ fun SonosTestScreen(
 
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Button(onClick = { viewModel.loadMedia(testUrl) }) {
-                            Text("Carica & Play")
+                            Text(stringResource(R.string.sonos_load_and_play))
                         }
-                        OutlinedButton(onClick = { viewModel.play() }) { Text("Play") }
-                        OutlinedButton(onClick = { viewModel.pause() }) { Text("Pause") }
-                        OutlinedButton(onClick = { viewModel.stop() }) { Text("Stop") }
+                        OutlinedButton(onClick = { viewModel.play() }) { Text(stringResource(R.string.sonos_play)) }
+                        OutlinedButton(onClick = { viewModel.pause() }) { Text(stringResource(R.string.sonos_pause)) }
+                        OutlinedButton(onClick = { viewModel.stop() }) { Text(stringResource(R.string.sonos_stop)) }
                     }
 
                     Spacer(Modifier.height(12.dp))
 
                     // ---- Volume slider ------------------------------------------
-                    Text("Volume: ${volumeDraft ?: playbackState.volume}")
+                    Text(stringResource(R.string.sonos_volume_label, volumeDraft ?: playbackState.volume))
                     Slider(
                         value = (volumeDraft ?: playbackState.volume).toFloat(),
                         valueRange = 0f..100f,
@@ -246,22 +252,22 @@ fun SonosTestScreen(
 
                     Spacer(Modifier.height(12.dp))
 
+                    val transitioningSuffix =
+                        if (playbackState.isTransitioning) " " + stringResource(R.string.sonos_transitioning_suffix) else ""
+                    val stateLabel =
+                        (if (playbackState.isPlaying) "PLAYING" else "STOPPED") + transitioningSuffix
                     Text(
-                        buildString {
-                            append("Stato: ")
-                            append(if (playbackState.isPlaying) "PLAYING" else "STOPPED")
-                            if (playbackState.isTransitioning) append(" (transitioning)")
-                            append("  |  Pos: ")
-                            append(formatSec(playbackState.position.inWholeSeconds))
-                            append(" / ")
-                            append(formatSec(playbackState.duration.inWholeSeconds))
-                        },
+                        stringResource(R.string.sonos_state_line, stateLabel) +
+                            "  |  Pos: " +
+                            formatSec(playbackState.position.inWholeSeconds) +
+                            " / " +
+                            formatSec(playbackState.duration.inWholeSeconds),
                         style = MaterialTheme.typography.bodySmall,
                     )
                     playbackState.lastError?.let {
                         Spacer(Modifier.height(4.dp))
                         Text(
-                            "Errore: $it",
+                            stringResource(R.string.sonos_error_prefix, it),
                             color = MaterialTheme.colorScheme.error,
                             style = MaterialTheme.typography.bodySmall,
                         )
@@ -274,7 +280,7 @@ fun SonosTestScreen(
     }
 
     TopAppBar(
-        title = { Text("Sonos UPnP Cast (beta)") },
+        title = { Text(stringResource(R.string.sonos_screen_title)) },
         navigationIcon = {
             IconButton(
                 onClick = navController::navigateUp,
@@ -315,8 +321,8 @@ private fun DeviceRow(
         Spacer(Modifier.width(8.dp))
         when {
             isConnecting -> CircularProgressIndicator(modifier = Modifier.size(20.dp))
-            isConnected -> OutlinedButton(onClick = onDisconnect) { Text("Disconnetti") }
-            else -> Button(onClick = onConnect, enabled = device.isUsable) { Text("Connetti") }
+            isConnected -> OutlinedButton(onClick = onDisconnect) { Text(stringResource(R.string.disconnect)) }
+            else -> Button(onClick = onConnect, enabled = device.isUsable) { Text(stringResource(R.string.connect)) }
         }
     }
 }
@@ -341,9 +347,9 @@ private fun KnownDeviceRow(
             )
         }
         Spacer(Modifier.width(4.dp))
-        OutlinedButton(onClick = onReconnect) { Text("Connetti") }
+        OutlinedButton(onClick = onReconnect) { Text(stringResource(R.string.connect)) }
         Spacer(Modifier.width(4.dp))
-        OutlinedButton(onClick = onForget) { Text("Rimuovi") }
+        OutlinedButton(onClick = onForget) { Text(stringResource(R.string.sonos_forget_button)) }
     }
 }
 

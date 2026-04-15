@@ -346,4 +346,32 @@
     <string name="new_version_available">New version available</string>
     <string name="translation_models">Translation Models</string>
     <string name="clear_translation_models">Clear translation models</string>
+
+    <!-- Sonos UPnP cast -->
+    <string name="sonos_section_cast">Cast</string>
+    <string name="sonos_entry_title">Sonos UPnP (beta)</string>
+    <string name="sonos_screen_title">Sonos UPnP Cast (beta)</string>
+    <string name="sonos_discovery_title">Discovery</string>
+    <string name="sonos_search_button">Cerca Sonos</string>
+    <string name="sonos_discovery_idle">Nessuna ricerca in corso.</string>
+    <string name="sonos_discovery_searching">Ricerca SSDP in corso...</string>
+    <string name="sonos_discovery_none_found">Nessun device trovato. Prova di nuovo o inserisci IP manualmente.</string>
+    <string name="sonos_discovery_found">Trovati %d device.</string>
+    <string name="sonos_error_prefix">Errore: %s</string>
+    <string name="sonos_manual_ip_label">IP manuale (bypassa SSDP)</string>
+    <string name="sonos_add_button">Aggiungi</string>
+    <string name="sonos_devices_title">Dispositivi</string>
+    <string name="sonos_devices_recent">Dispositivi recenti</string>
+    <string name="sonos_devices_recent_hint">Tap per riconnettere senza SSDP</string>
+    <string name="sonos_forget_button">Rimuovi</string>
+    <string name="sonos_playback_title">Riproduzione</string>
+    <string name="sonos_connected_to">Connesso a %s</string>
+    <string name="sonos_audio_url_label">URL audio</string>
+    <string name="sonos_load_and_play">Carica &amp; Play</string>
+    <string name="sonos_play">Play</string>
+    <string name="sonos_pause">Pause</string>
+    <string name="sonos_stop">Stop</string>
+    <string name="sonos_volume_label">Volume: %d</string>
+    <string name="sonos_state_line">Stato: %s</string>
+    <string name="sonos_transitioning_suffix">(transitioning)</string>
 </resources>
