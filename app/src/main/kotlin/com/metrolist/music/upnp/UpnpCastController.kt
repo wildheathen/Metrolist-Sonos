@@ -244,6 +244,11 @@ class UpnpCastController(
     /**
      * Load a new media URL on the remote and start playing it.
      * Use [DidlBuilder.audioItem] to build the metadata XML.
+     *
+     * @return `true` if the remote accepted the URL and Play commands;
+     *   `false` if there was no active connection, or a SOAP / HTTP error
+     *   prevented the load. On failure the error message is also written
+     *   to [PlaybackState.lastError] for UI surfacing.
      */
     suspend fun loadMedia(
         url: String,
@@ -253,10 +258,10 @@ class UpnpCastController(
         albumArtUrl: String = "",
         mimeType: String = "audio/mpeg",
         durationMs: Long? = null,
-    ) = commandMutex.withLock {
+    ): Boolean = commandMutex.withLock {
         val av = avTransport ?: run {
             Timber.w("loadMedia called without active UPnP connection")
-            return
+            return@withLock false
         }
         val metadata = DidlBuilder.audioItem(
             url = url,
@@ -275,10 +280,13 @@ class UpnpCastController(
                 currentTitle = title,
                 currentArtist = artist,
                 isPlaying = true,
+                lastError = null,
             )
+            true
         } catch (e: Exception) {
             Timber.w(e, "loadMedia failed")
             _playbackState.value = _playbackState.value.copy(lastError = e.message)
+            false
         }
     }
 
