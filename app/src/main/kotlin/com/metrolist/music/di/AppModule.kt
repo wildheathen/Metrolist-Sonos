@@ -17,6 +17,7 @@ import com.metrolist.music.db.InternalDatabase
 import com.metrolist.music.db.MusicDatabase
 import com.metrolist.music.listentogether.ListenTogetherClient
 import com.metrolist.music.listentogether.ListenTogetherManager
+import com.metrolist.music.upnp.UpnpCastController
 import com.metrolist.music.utils.dataStore
 import com.metrolist.music.utils.get
 import dagger.Module
@@ -24,9 +25,13 @@ import dagger.Provides
 import dagger.hilt.InstallIn
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
+import io.ktor.client.HttpClient
+import io.ktor.client.engine.cio.CIO
+import io.ktor.client.plugins.HttpTimeout
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import javax.inject.Qualifier
 import javax.inject.Singleton
 
 @Module
@@ -114,4 +119,37 @@ object AppModule {
         @ApplicationContext context: Context,
         client: ListenTogetherClient,
     ): ListenTogetherManager = ListenTogetherManager(client, context)
+
+    /**
+     * Dedicated Ktor HttpClient for UPnP (Sonos) control traffic.
+     * Local-network calls have different timeout semantics than YouTube
+     * traffic: failures should surface quickly so the UI can retry
+     * discovery, rather than blocking for 30 s+ on a stale device.
+     */
+    @Singleton
+    @Provides
+    @UpnpHttpClient
+    fun provideUpnpHttpClient(): HttpClient = HttpClient(CIO) {
+        engine {
+            requestTimeout = 5_000L
+        }
+        install(HttpTimeout) {
+            connectTimeoutMillis = 3_000L
+            requestTimeoutMillis = 5_000L
+            socketTimeoutMillis = 5_000L
+        }
+    }
+
+    @Singleton
+    @Provides
+    fun provideUpnpCastController(
+        @ApplicationContext context: Context,
+        @UpnpHttpClient httpClient: HttpClient,
+    ): UpnpCastController = UpnpCastController(context, httpClient)
 }
+
+/** Qualifier for the Ktor HttpClient used by the UPnP / Sonos integration. */
+@Qualifier
+@Retention(AnnotationRetention.BINARY)
+annotation class UpnpHttpClient
+
