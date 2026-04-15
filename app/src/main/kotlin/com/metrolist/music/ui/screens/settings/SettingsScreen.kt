@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -32,12 +33,14 @@ import androidx.navigation.NavController
 import com.metrolist.music.BuildConfig
 import com.metrolist.music.LocalPlayerAwareWindowInsets
 import com.metrolist.music.R
+import com.metrolist.music.constants.SonosCastEnabledKey
 import com.metrolist.music.ui.component.IconButton
 import com.metrolist.music.ui.component.Material3SettingsGroup
 import com.metrolist.music.ui.component.Material3SettingsItem
 import com.metrolist.music.ui.component.ReleaseNotesCard
 import com.metrolist.music.ui.utils.backToMain
 import com.metrolist.music.utils.Updater
+import com.metrolist.music.utils.rememberPreference
 import androidx.compose.runtime.remember
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -49,6 +52,10 @@ fun SettingsScreen(
     val uriHandler = LocalUriHandler.current
     val context = LocalContext.current
     val isAndroid12OrLater = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+    val (sonosCastEnabled, onSonosCastEnabledChange) = rememberPreference(
+        key = SonosCastEnabledKey,
+        defaultValue = false,
+    )
     val hasAndroidAuto = remember {
         try {
             context.packageManager.getPackageInfo(
@@ -114,11 +121,38 @@ fun SettingsScreen(
 
         // Cast Section (Sonos UPnP beta — independent from Google Cast)
         Material3SettingsGroup(
-            title = "Cast",
+            title = stringResource(R.string.sonos_section_cast),
             items = listOf(
                 Material3SettingsItem(
                     icon = painterResource(R.drawable.cast),
-                    title = { Text("Sonos UPnP (beta)") },
+                    title = { Text("Abilita Sonos Cast") },
+                    description = {
+                        Text(
+                            text = "Mostra il bottone Cast nel player (sperimentale)",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    },
+                    trailingContent = {
+                        Switch(
+                            checked = sonosCastEnabled,
+                            onCheckedChange = onSonosCastEnabledChange,
+                            thumbContent = {
+                                Icon(
+                                    painter = painterResource(
+                                        id = if (sonosCastEnabled) R.drawable.check else R.drawable.close
+                                    ),
+                                    contentDescription = null,
+                                    modifier = Modifier.size(SwitchDefaults.IconSize)
+                                )
+                            }
+                        )
+                    },
+                    onClick = { onSonosCastEnabledChange(!sonosCastEnabled) }
+                ),
+                Material3SettingsItem(
+                    icon = painterResource(R.drawable.cast),
+                    title = { Text(stringResource(R.string.sonos_entry_title)) },
                     onClick = { navController.navigate("settings/sonos_upnp") }
                 )
             )
