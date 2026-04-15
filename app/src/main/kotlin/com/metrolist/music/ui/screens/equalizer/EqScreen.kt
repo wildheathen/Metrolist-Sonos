@@ -130,7 +130,9 @@ fun EqScreen(
                 val intent = Intent(AudioEffect.ACTION_DISPLAY_AUDIO_EFFECT_CONTROL_PANEL).apply {
                     putExtra(
                         AudioEffect.EXTRA_AUDIO_SESSION,
-                        connection.player.audioSessionId
+                        // audioSessionId is ExoPlayer-specific; the system
+                        // equalizer always targets the local audio pipeline.
+                        connection.localPlayer.audioSessionId
                     )
                     putExtra(
                         AudioEffect.EXTRA_PACKAGE_NAME,

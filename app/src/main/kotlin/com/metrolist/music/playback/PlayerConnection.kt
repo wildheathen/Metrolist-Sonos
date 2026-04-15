@@ -63,26 +63,40 @@ class PlayerConnection(
     private val playerReadinessFlow = service.isPlayerReady
 
     /**
-     * Safe player accessor checks readiness & handles errors.
-     * Should be used by all player access within this class.
+     * Safe player accessor. When a UPnP cast session is active, the attached
+     * player is the UpnpPlayer instance (not the local ExoPlayer) — so all
+     * Metrolist UI commands (play/pause/seek/volume) transparently drive the
+     * Sonos. When not casting, it falls back to the local ExoPlayer.
      */
-    private fun getPlayerSafe(): ExoPlayer =
+    private fun getPlayerSafe(): Player =
         try {
             if (!playerReadinessFlow.value) {
                 Timber.tag(TAG).w("Player accessed before service initialization complete; returning best-effort reference")
             }
-            service.player
+            attachedPlayer ?: service.player
         } catch (e: UninitializedPropertyAccessException) {
             Timber.tag(TAG).e(e, "Fatal: player property accessed but not initialized")
             throw IllegalStateException("MusicService.player not initialized; possible race condition in service startup", e)
         }
 
     /**
-     * Public accessor for player. Throws if player not ready.
+     * Public accessor for the currently-active player. May be the local
+     * ExoPlayer or a remote UpnpPlayer when casting to a Sonos.
+     *
+     * Throws if the service's local player has not yet initialized.
      * Callers should check [isPlayerInitialized] before calling, or handle exceptions.
      */
-    val player: ExoPlayer
+    val player: Player
         get() = getPlayerSafe()
+
+    /**
+     * Always returns the local [ExoPlayer], even while a UPnP cast session
+     * is active. Use this for calls that require ExoPlayer-specific APIs
+     * (audioSessionId for the equalizer, setShuffleOrder, etc.) — these
+     * operations always target the local pipeline regardless of casting.
+     */
+    val localPlayer: ExoPlayer
+        get() = service.player
 
     /** Tracks whether player initialization completed successfully */
     private val isPlayerInitialized = MutableStateFlow(service.isPlayerReady.value)
