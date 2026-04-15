@@ -1,0 +1,98 @@
+name: Release on Tag
+
+# Triggered when a tag matching phase* (e.g. phase3b-fixed, phase5, phase5-*) is
+# pushed. Builds the foss + gms debug APKs (the throwaway debug keystore is
+# generated in-workflow so no signing secrets are needed on forks) and
+# publishes them as assets on a GitHub Release for the tag.
+#
+# Keeps the signed release build separate — that path still lives in
+# release.yml, which runs on main + version bump and needs the KEYSTORE secret.
+
+on:
+  push:
+    tags:
+      - "phase*"
+
+permissions:
+  contents: write
+
+jobs:
+  build_and_release:
+    name: Build ${{ matrix.variant }} debug APK and attach to release
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: foss
+            variantName: Foss
+          - variant: gms
+            variantName: Gms
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          java-version: "21"
+          distribution: "temurin"
+
+      - name: Set Up Gradle
+        uses: gradle/actions/setup-gradle@v5
+        with:
+          cache-encryption-key: ${{ secrets.GRADLE_CACHE_KEY }}
+          cache-cleanup: on-success
+
+      - name: Setup and Generate Protobuf
+        uses: ./.github/actions/setup-protobuf
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Prepare debug keystore (from secret, or generate a throwaway)
+        env:
+          DEBUG_KEYSTORE_B64: ${{ secrets.DEBUG_KEYSTORE }}
+        run: |
+          if [ -n "$DEBUG_KEYSTORE_B64" ]; then
+            echo "$DEBUG_KEYSTORE_B64" | base64 -d > ./app/persistent-debug.keystore
+          else
+            keytool -genkeypair -v -keystore ./app/persistent-debug.keystore \
+              -storetype JKS -storepass android \
+              -alias androiddebugkey -keypass android \
+              -dname "CN=Android Debug,O=Android,C=US" \
+              -keyalg RSA -keysize 2048 -validity 10000
+          fi
+
+      - name: Build Debug APK
+        run: ./gradlew --console=plain assemble${{ matrix.variantName }}Debug --warning-mode summary
+        env:
+          METROLIST_APPLICATION_ID: com.metrolist.music
+          METROLIST_APP_NAME: Metrolist Nightly
+          PULL_REQUEST: "false"
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          LASTFM_API_KEY: ${{ secrets.LASTFM_API_KEY }}
+          LASTFM_SECRET: ${{ secrets.LASTFM_SECRET }}
+
+      - name: Rename APKs for release
+        run: |
+          OUT_DIR="app/build/outputs/apk/${{ matrix.variant }}/debug"
+          STAGE="release-assets"
+          mkdir -p "$STAGE"
+          TAG="${GITHUB_REF##*/}"
+          for apk in "$OUT_DIR"/*.apk; do
+            base="$(basename "$apk" .apk)"
+            cp "$apk" "$STAGE/${base}-${TAG}.apk"
+          done
+          ls -la "$STAGE"
+
+      - name: Create / update Release and upload APK
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
+          files: release-assets/*.apk
