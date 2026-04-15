@@ -16,6 +16,9 @@ import java.time.ZoneOffset
 // Sonos UPnP integration — JSON array of KnownSonosDevice, most-recent-first.
 val KnownSonosDevicesKey = stringPreferencesKey("knownSonosDevices")
 
+// Master toggle for the Sonos UPnP cast feature. Default false (opt-in).
+val SonosCastEnabledKey = booleanPreferencesKey("sonosCastEnabled")
+
 val EnableDynamicIconKey = booleanPreferencesKey("enableDynamicIcon")
 val EnableHighRefreshRateKey = booleanPreferencesKey("enableHighRefreshRate")
 val DynamicThemeKey = booleanPreferencesKey("dynamicTheme")
