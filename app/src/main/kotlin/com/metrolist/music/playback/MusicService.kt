@@ -660,6 +660,21 @@ class MusicService :
                             if (!primed) {
                                 Timber.tag("MusicService")
                                     .w("UPnP: priming failed — staying on local player")
+                                // If the underlying loadMedia never surfaced a
+                                // specific error (e.g. missing mediaId / null
+                                // stream URL), still tell the user why cast
+                                // did not take over. A subsequent lastError
+                                // from the controller would show its own toast.
+                                val lastErr = upnpCastController.playbackState.value.lastError
+                                if (lastErr.isNullOrBlank()) {
+                                    withContext(Dispatchers.Main) {
+                                        Toast.makeText(
+                                            this@MusicService,
+                                            getString(R.string.sonos_cast_prime_failed),
+                                            Toast.LENGTH_LONG,
+                                        ).show()
+                                    }
+                                }
                                 return@collect
                             }
 
@@ -696,6 +711,29 @@ class MusicService :
                         Timber.tag("MusicService")
                             .i("Sonos Cast toggled off while connected — disconnecting")
                         upnpCastController.disconnect()
+                    }
+                }
+        }
+
+        // Surface UPnP playback failures to the user as a Toast. Any time the
+        // controller writes a non-empty `lastError` (SOAP 500, HTTP 4xx, I/O,
+        // etc.) we emit a single Toast with the device name when available,
+        // then reset so we don't keep re-showing the same error.
+        scope.launch {
+            upnpCastController.playbackState
+                .map { it.lastError }
+                .distinctUntilChanged()
+                .collect { error ->
+                    if (error.isNullOrBlank()) return@collect
+                    val deviceName = (upnpCastController.connectionState.value as?
+                        com.metrolist.music.upnp.ConnectionState.Connected)?.device?.displayName
+                    withContext(Dispatchers.Main) {
+                        val text = if (!deviceName.isNullOrBlank()) {
+                            getString(R.string.sonos_cast_error_on_device, deviceName, error)
+                        } else {
+                            getString(R.string.sonos_cast_error_generic, error)
+                        }
+                        Toast.makeText(this@MusicService, text, Toast.LENGTH_LONG).show()
                     }
                 }
         }
