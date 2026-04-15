@@ -201,6 +201,17 @@ class UpnpDiscovery(
         }
     }
 
+    /**
+     * Fetch a device description directly from an IP, bypassing SSDP.
+     * Useful when the phone's multicast is flaky or the device is on a
+     * subnet the current WiFi cannot multicast to.
+     */
+    suspend fun fetchByIp(ip: String, port: Int = Upnp.SONOS_DEFAULT_PORT): SonosDevice? =
+        withContext(Dispatchers.IO) {
+            val location = "http://$ip:$port/xml/device_description.xml"
+            fetchDevice(location)
+        }
+
     // ---------------------------------------------------------------------
     // Device description fetch + parse.
     // ---------------------------------------------------------------------

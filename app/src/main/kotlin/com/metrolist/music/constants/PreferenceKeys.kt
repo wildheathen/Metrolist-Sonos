@@ -13,6 +13,9 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import java.time.LocalDateTime
 import java.time.ZoneOffset
 
+// Sonos UPnP integration — JSON array of KnownSonosDevice, most-recent-first.
+val KnownSonosDevicesKey = stringPreferencesKey("knownSonosDevices")
+
 val EnableDynamicIconKey = booleanPreferencesKey("enableDynamicIcon")
 val EnableHighRefreshRateKey = booleanPreferencesKey("enableHighRefreshRate")
 val DynamicThemeKey = booleanPreferencesKey("dynamicTheme")

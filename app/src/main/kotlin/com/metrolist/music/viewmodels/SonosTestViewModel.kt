@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.metrolist.music.upnp.ConnectionState
 import com.metrolist.music.upnp.DiscoveryState
+import com.metrolist.music.upnp.KnownSonosDevice
 import com.metrolist.music.upnp.PlaybackState
 import com.metrolist.music.upnp.SonosDevice
 import com.metrolist.music.upnp.UpnpCastController
@@ -31,8 +32,21 @@ class SonosTestViewModel @Inject constructor(
     val discoveryState: StateFlow<DiscoveryState> = controller.discoveryState
     val connectionState: StateFlow<ConnectionState> = controller.connectionState
     val playbackState: StateFlow<PlaybackState> = controller.playbackState
+    val knownDevices: StateFlow<List<KnownSonosDevice>> = controller.knownDevices
 
     fun startDiscovery() = controller.startDiscovery()
+
+    fun addDeviceByIp(ip: String) = controller.addDeviceByIp(ip)
+
+    fun reconnectKnown(known: KnownSonosDevice) {
+        viewModelScope.launch { controller.reconnectKnown(known) }
+    }
+
+    fun forgetKnown(udn: String) = controller.forgetKnown(udn)
+
+    fun verifyActiveConnection() {
+        viewModelScope.launch { controller.verifyActiveConnection() }
+    }
 
     fun connect(device: SonosDevice) {
         viewModelScope.launch { controller.connect(device) }
