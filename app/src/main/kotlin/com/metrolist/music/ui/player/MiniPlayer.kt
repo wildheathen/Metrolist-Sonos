@@ -96,6 +96,7 @@ import com.metrolist.music.listentogether.ListenTogetherManager
 import com.metrolist.music.models.MediaMetadata
 import com.metrolist.music.playback.CastConnectionHandler
 import com.metrolist.music.playback.PlayerConnection
+import com.metrolist.music.ui.component.upnp.UpnpCastButton
 import com.metrolist.music.ui.screens.settings.DarkMode
 import com.metrolist.music.ui.utils.resize
 import com.metrolist.music.utils.rememberEnumPreference
@@ -443,7 +444,12 @@ private fun NewMiniPlayer(
 
                 Spacer(modifier = Modifier.width(12.dp))
 
-                // Cast indicator
+                // Sonos/UPnP cast button — auto-hides when the feature toggle is off.
+                UpnpCastButton(
+                    modifier = Modifier.size(40.dp),
+                )
+
+                // Cast indicator (Google Cast, gms variant)
                 if (isCasting) {
                     Icon(
                         painter = painterResource(R.drawable.cast_connected),
@@ -849,6 +855,9 @@ private fun LegacyMiniPlayer(
                     )
                 }
             }
+
+            // Sonos/UPnP cast button — auto-hides when the feature toggle is off.
+            UpnpCastButton()
 
             LegacyPlayPauseButton(
                 playbackState = playbackState,

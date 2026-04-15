@@ -164,6 +164,7 @@ import com.metrolist.music.ui.component.ResizableIconButton
 import com.metrolist.music.ui.component.SquigglySlider
 import com.metrolist.music.ui.component.WavySlider
 import com.metrolist.music.ui.component.rememberBottomSheetState
+import com.metrolist.music.ui.component.upnp.UpnpCastButton
 import com.metrolist.music.ui.menu.PlayerMenu
 import com.metrolist.music.ui.screens.settings.DarkMode
 import com.metrolist.music.ui.theme.PlayerColorExtractor
@@ -1059,6 +1060,10 @@ fun BottomSheetPlayer(
                         }
                     }
                 }
+
+                // Sonos/UPnP cast entry point. Renders nothing when
+                // SonosCastEnabledKey is false, so it is safe to always place here.
+                UpnpCastButton()
 
                 Spacer(modifier = Modifier.width(12.dp))
 
