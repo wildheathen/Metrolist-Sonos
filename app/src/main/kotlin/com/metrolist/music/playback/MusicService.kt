@@ -253,6 +253,12 @@ class MusicService :
     @Inject
     lateinit var listenTogetherManager: com.metrolist.music.listentogether.ListenTogetherManager
 
+    @Inject
+    lateinit var upnpCastController: com.metrolist.music.upnp.UpnpCastController
+
+    // Lazy: instantiated on first cast connect. Stays alive until MusicService dies.
+    private var upnpPlayer: UpnpPlayer? = null
+
     private lateinit var audioManager: AudioManager
     private var audioFocusRequest: AudioFocusRequest? = null
     private var lastAudioFocusState = AudioManager.AUDIOFOCUS_NONE
@@ -361,8 +367,12 @@ class MusicService :
     private val playerInitialized = MutableStateFlow(false)
     val isPlayerReady: kotlinx.coroutines.flow.StateFlow<Boolean> = playerInitialized.asStateFlow()
 
-    // Expose active player flow for UI/Connection updates
-    private val _playerFlow = MutableStateFlow<ExoPlayer?>(null)
+    // Expose active player flow for UI/Connection updates.
+    // Typed as Player? (not ExoPlayer?) so the flow can carry a UpnpPlayer
+    // instance when the user casts to a Sonos — PlayerConnection and other
+    // observers see the "currently active" player and re-attach listeners
+    // accordingly.
+    private val _playerFlow = MutableStateFlow<Player?>(null)
     val playerFlow = _playerFlow.asStateFlow()
 
     private val playerSilenceProcessors = HashMap<Player, SilenceDetectorAudioProcessor>()
@@ -602,6 +612,41 @@ class MusicService :
 
         // Initialize Google Cast
         initializeCast()
+
+        // Observe UPnP (Sonos) cast connection state and swap the active
+        // player on MediaSession when it changes. See [swapActivePlayer]
+        // for the listener re-attach dance.
+        scope.launch {
+            upnpCastController.connectionState.collect { state ->
+                when (state) {
+                    is com.metrolist.music.upnp.ConnectionState.Connected -> {
+                        val up = upnpPlayer ?: UpnpPlayer(
+                            controller = upnpCastController,
+                            scope = scope,
+                            streamUrlProvider = { mediaId -> getStreamUrl(mediaId) },
+                        ).also { upnpPlayer = it }
+
+                        // Transfer the current queue so next/previous stays sensible.
+                        val queueItems = (0 until player.mediaItemCount).map { player.getMediaItemAt(it) }
+                        val currentIndex = player.currentMediaItemIndex.coerceAtLeast(0)
+                        val currentPos = player.currentPosition.coerceAtLeast(0)
+                        if (queueItems.isNotEmpty()) {
+                            up.setMediaItems(queueItems, currentIndex, currentPos)
+                        }
+
+                        // Pause the local player so we don't hear two sources.
+                        if (player.isPlaying) player.pause()
+
+                        swapActivePlayer(up)
+                    }
+                    is com.metrolist.music.upnp.ConnectionState.Disconnected,
+                    is com.metrolist.music.upnp.ConnectionState.Error -> {
+                        swapActivePlayer(player)
+                    }
+                    else -> { /* Connecting: no-op, wait for Connected */ }
+                }
+            }
+        }
 
         // Update lyrics provider order preference
         // Collecting this flow activates the internal map that updates lyricsProviders in LyricsHelper
@@ -3415,6 +3460,66 @@ class MusicService :
                 null
             }
         }
+    }
+
+    /**
+     * Swap the active [Player] exposed through [mediaSession] and [playerFlow].
+     *
+     * Media3's `mediaSession.setPlayer(...)` re-routes commands from any
+     * MediaController bound to the session token (lock-screen, Bluetooth,
+     * Android Auto, etc.). However, observers that attach listeners
+     * *directly* to the player instance — MusicService itself as a
+     * Player.Listener, SleepTimer, PlayerConnection — must be re-plugged
+     * manually. This method handles both.
+     *
+     * Pushing the new player into `_playerFlow` triggers PlayerConnection's
+     * existing [updateAttachedPlayer] path, so Metrolist's UI flows
+     * (playbackState, currentMediaItem, mediaMetadata, queue) automatically
+     * re-read from the new player.
+     */
+    private fun swapActivePlayer(newPlayer: Player) {
+        val currentInSession: Player? = try {
+            mediaSession.player
+        } catch (_: Exception) {
+            null
+        }
+        if (currentInSession === newPlayer) return
+
+        // Detach our direct listeners from the outgoing player — but only
+        // if it's not the local ExoPlayer (which must keep its listeners
+        // for when we swap back; we simply pause it so nothing is heard).
+        if (currentInSession != null && currentInSession !== player) {
+            try {
+                currentInSession.removeListener(this@MusicService)
+            } catch (_: Exception) {
+            }
+            try {
+                currentInSession.removeListener(sleepTimer)
+            } catch (_: Exception) {
+            }
+        }
+
+        // Swap on the session — this re-routes all MediaController commands.
+        mediaSession.player = newPlayer
+
+        // Re-attach listeners to the new player, but only if it's NOT the
+        // local ExoPlayer (which already has them from onCreate, and we
+        // don't want duplicates).
+        if (newPlayer !== player) {
+            try {
+                newPlayer.addListener(this@MusicService)
+            } catch (_: Exception) {
+            }
+            try {
+                newPlayer.addListener(sleepTimer)
+            } catch (_: Exception) {
+            }
+        }
+
+        // Notify PlayerConnection & other observers via the shared flow.
+        _playerFlow.value = newPlayer
+
+        Timber.tag(TAG).d("Active player swapped to: %s", newPlayer::class.simpleName)
     }
 
     /**

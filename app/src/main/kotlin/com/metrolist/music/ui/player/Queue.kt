@@ -714,7 +714,10 @@ fun Queue(
                     if (!playerConnection.player.shuffleModeEnabled) {
                         playerConnection.player.moveMediaItem(safeFrom, safeTo)
                     } else {
-                        playerConnection.player.setShuffleOrder(
+                        // setShuffleOrder is ExoPlayer-specific; shuffle reordering
+                        // only applies to the local queue, not to the remote UPnP
+                        // renderer, so always target the local player here.
+                        playerConnection.localPlayer.setShuffleOrder(
                             DefaultShuffleOrder(
                                 queueWindows
                                     .map { it.firstPeriodIndex }
