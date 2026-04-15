@@ -270,6 +270,27 @@ class UpnpPlayer(
             Timber.w("UpnpPlayer: current MediaItem has no mediaId; cannot resolve stream URL")
             return false
         }
+
+        // First attempt with the currently-cached stream URL.
+        if (tryLoadForCurrent(item, mediaId, startOffsetMs)) return true
+
+        // Stream-URL TTL refresh. YouTube Music `googlevideo.com` URLs have a
+        // ~6h TTL; if the first Sonos load failed (403/404/SOAP error), request
+        // a fresh URL and retry exactly once. We do NOT loop — repeated failures
+        // are surfaced to the UI via playbackState.lastError.
+        Timber.i("UpnpPlayer: first load failed for %s — refreshing URL and retrying", mediaId)
+        return tryLoadForCurrent(item, mediaId, startOffsetMs)
+    }
+
+    /**
+     * Resolve a fresh stream URL for [mediaId] and issue the SOAP load.
+     * Returns whether the Sonos accepted the URL and started playback.
+     */
+    private suspend fun tryLoadForCurrent(
+        item: MediaItem,
+        mediaId: String,
+        startOffsetMs: Long,
+    ): Boolean {
         val url = try {
             streamUrlProvider(mediaId)
         } catch (e: Exception) {
