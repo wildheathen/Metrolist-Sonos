@@ -1,9 +1,16 @@
-name: Release on Tag
+name: Release on Tag or Release Branch
 
-# Triggered when a tag matching phase* (e.g. phase3b-fixed, phase5, phase5-*) is
-# pushed. Builds the foss + gms debug APKs (the throwaway debug keystore is
-# generated in-workflow so no signing secrets are needed on forks) and
-# publishes them as assets on a GitHub Release for the tag.
+# Triggered when EITHER:
+#   - a tag matching phase* is pushed, OR
+#   - a branch named `release/phase*` is pushed.
+# The branch trigger exists because this fork's git proxy doesn't accept tag
+# pushes; pushing a branch named `release/<tag>` achieves the same effect —
+# the workflow derives the tag/release name from the branch and lets
+# softprops/action-gh-release create the tag at publish time.
+#
+# Builds the foss + gms debug APKs (the throwaway debug keystore is generated
+# in-workflow so no signing secrets are needed on forks) and publishes them
+# as assets on a GitHub Release for the derived name.
 #
 # Keeps the signed release build separate — that path still lives in
 # release.yml, which runs on main + version bump and needs the KEYSTORE secret.
@@ -12,6 +19,8 @@ on:
   push:
     tags:
       - "phase*"
+    branches:
+      - "release/phase*"
 
 permissions:
   contents: write
@@ -77,12 +86,26 @@ jobs:
           LASTFM_API_KEY: ${{ secrets.LASTFM_API_KEY }}
           LASTFM_SECRET: ${{ secrets.LASTFM_SECRET }}
 
+      - name: Derive release name
+        id: relname
+        run: |
+          REF="${GITHUB_REF}"
+          if [[ "$REF" == refs/tags/* ]]; then
+            NAME="${REF#refs/tags/}"
+          else
+            # branches: strip leading "release/"
+            NAME="${REF#refs/heads/}"
+            NAME="${NAME#release/}"
+          fi
+          echo "name=${NAME}" >> "$GITHUB_OUTPUT"
+          echo "Derived release name: $NAME"
+
       - name: Rename APKs for release
         run: |
           OUT_DIR="app/build/outputs/apk/${{ matrix.variant }}/debug"
           STAGE="release-assets"
           mkdir -p "$STAGE"
-          TAG="${GITHUB_REF##*/}"
+          TAG="${{ steps.relname.outputs.name }}"
           for apk in "$OUT_DIR"/*.apk; do
             base="$(basename "$apk" .apk)"
             cp "$apk" "$STAGE/${base}-${TAG}.apk"
@@ -92,7 +115,8 @@ jobs:
       - name: Create / update Release and upload APK
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
-          name: ${{ github.ref_name }}
+          tag_name: ${{ steps.relname.outputs.name }}
+          name: ${{ steps.relname.outputs.name }}
           generate_release_notes: true
+          target_commitish: ${{ github.sha }}
           files: release-assets/*.apk
