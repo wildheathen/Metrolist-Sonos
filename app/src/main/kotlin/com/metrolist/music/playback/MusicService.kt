@@ -590,8 +590,20 @@ class MusicService :
                             val queueItems = (0 until player.mediaItemCount).map { player.getMediaItemAt(it) }
                             val currentIndex = player.currentMediaItemIndex.coerceAtLeast(0)
                             val currentPos = player.currentPosition.coerceAtLeast(0)
-                            if (queueItems.isNotEmpty()) {
-                                up.setMediaItems(queueItems, currentIndex, currentPos)
+                            if (queueItems.isEmpty()) {
+                                Timber.tag("MusicService").i("UPnP: no queue to cast — skipping swap")
+                                return@collect
+                            }
+
+                            // Prime the Sonos BEFORE swapping so the UI never
+                            // sees an UpnpPlayer whose remote hasn't loaded yet
+                            // (otherwise the player shows "0:00, paused" until
+                            // the SOAP round-trip completes — issue #2 Bug 3).
+                            val primed = up.primeSonos(queueItems, currentIndex, currentPos)
+                            if (!primed) {
+                                Timber.tag("MusicService")
+                                    .w("UPnP: priming failed — staying on local player")
+                                return@collect
                             }
 
                             // Pause the local player so we don't hear two sources.

@@ -207,6 +207,44 @@ class UpnpPlayer(
         return Futures.immediateVoidFuture()
     }
 
+    /**
+     * Synchronously prime the remote Sonos with the current media item, queue
+     * and start position. Unlike [handleSetMediaItems] (fire-and-forget), this
+     * suspends until the SOAP `SetAVTransportURI` + `Play` round-trip completes
+     * (or fails) and returns a boolean indicating success.
+     *
+     * Intended to be called by [MusicService] immediately BEFORE swapping the
+     * active player on the MediaSession — so we never expose a fresh UpnpPlayer
+     * to the UI before the Sonos has actually accepted the media, preventing
+     * the "stuck at 0:00, paused" limbo state documented in issue #2 (Bug 3).
+     *
+     * @return `true` if the Sonos is playing (or about to play) the requested
+     *   track; `false` if the queue is empty, the stream URL could not be
+     *   resolved, or the SOAP call failed. On failure the caller should
+     *   NOT swap players — the local ExoPlayer should remain active.
+     */
+    suspend fun primeSonos(
+        mediaItems: List<MediaItem>,
+        startIndex: Int,
+        startPositionMs: Long,
+    ): Boolean {
+        val listCopy = mediaItems.toList()
+        if (listCopy.isEmpty()) return false
+        // `items`/`currentIndex` are read by Media3 from getState() on the
+        // application looper, so assign them there to avoid a race with any
+        // pending invalidateState() hop already queued on main.
+        withContext(Dispatchers.Main) {
+            items = listCopy
+            currentIndex = startIndex.coerceIn(0, (items.size - 1).coerceAtLeast(0))
+        }
+        val ok = loadCurrentOnRemote(startPositionMs.coerceAtLeast(0))
+        // Republish the state so the new playlist snapshot reaches the UI even
+        // if the controller flow did not emit (loadMedia may have updated no
+        // observable field beyond currentUrl).
+        withContext(Dispatchers.Main) { invalidateState() }
+        return ok
+    }
+
     override fun handleSetDeviceVolume(deviceVolume: Int, flags: Int): ListenableFuture<*> {
         scope.launch { controller.setVolume(deviceVolume.coerceIn(0, 100)) }
         return Futures.immediateVoidFuture()
@@ -225,12 +263,12 @@ class UpnpPlayer(
     // ---------------------------------------------------------------------
     // Helpers
     // ---------------------------------------------------------------------
-    private suspend fun loadCurrentOnRemote(startOffsetMs: Long = 0) {
-        val item = items.getOrNull(currentIndex) ?: return
+    private suspend fun loadCurrentOnRemote(startOffsetMs: Long = 0): Boolean {
+        val item = items.getOrNull(currentIndex) ?: return false
         val mediaId = item.mediaId
         if (mediaId.isBlank()) {
             Timber.w("UpnpPlayer: current MediaItem has no mediaId; cannot resolve stream URL")
-            return
+            return false
         }
         val url = try {
             streamUrlProvider(mediaId)
@@ -240,25 +278,26 @@ class UpnpPlayer(
         }
         if (url == null) {
             Timber.w("UpnpPlayer: streamUrlProvider returned null for %s", mediaId)
-            return
+            return false
         }
         val meta = item.mediaMetadata
         val titleText = meta.title?.toString().orEmpty()
         val artistText = meta.artist?.toString().orEmpty()
         val albumText = meta.albumTitle?.toString().orEmpty()
         val artUrl = meta.artworkUri?.toString().orEmpty()
-        controller.loadMedia(
+        val ok = controller.loadMedia(
             url = url,
             title = titleText.ifBlank { "Metrolist" },
             artist = artistText,
             album = albumText,
             albumArtUrl = artUrl,
         )
-        if (startOffsetMs > 0) {
+        if (ok && startOffsetMs > 0) {
             try {
                 controller.seek(startOffsetMs.milliseconds)
             } catch (_: Exception) {
             }
         }
+        return ok
     }
 }
