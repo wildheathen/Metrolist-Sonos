@@ -1,6 +1,9 @@
 package com.metrolist.music.upnp
 
 import android.content.Context
+import androidx.datastore.preferences.core.edit
+import com.metrolist.music.constants.KnownSonosDevicesKey
+import com.metrolist.music.utils.dataStore
 import io.ktor.client.HttpClient
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -11,10 +14,14 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.json.Json
 import timber.log.Timber
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
@@ -56,6 +63,31 @@ class UpnpCastController(
     // race when the user hammers buttons.
     private val commandMutex = Mutex()
 
+    private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
+
+    // Known devices: persisted across app launches, MRU-ordered, max [MAX_KNOWN].
+    private val _knownDevices = MutableStateFlow<List<KnownSonosDevice>>(emptyList())
+    val knownDevices: StateFlow<List<KnownSonosDevice>> = _knownDevices.asStateFlow()
+
+    init {
+        // Load known devices from DataStore once at creation.
+        scope.launch {
+            try {
+                val raw = context.dataStore.data
+                    .map { it[KnownSonosDevicesKey] ?: "" }
+                    .first()
+                if (raw.isNotBlank()) {
+                    _knownDevices.value = json.decodeFromString(
+                        ListSerializer(KnownSonosDevice.serializer()),
+                        raw,
+                    )
+                }
+            } catch (e: Exception) {
+                Timber.w(e, "Failed to load known Sonos devices")
+            }
+        }
+    }
+
     // ---------------------------------------------------------------------
     // Discovery state
     // ---------------------------------------------------------------------
@@ -90,6 +122,39 @@ class UpnpCastController(
         discoveryJob?.cancel()
         if (_discoveryState.value is DiscoveryState.Searching) {
             _discoveryState.value = DiscoveryState.Idle
+        }
+    }
+
+    /**
+     * Add a device to the list by fetching its device description directly from an IP.
+     * Bypasses SSDP entirely — useful when the phone's multicast is broken
+     * (some OEMs silently drop SSDP traffic) or when the device is on a different
+     * subnet. Port defaults to 1400 (Sonos).
+     */
+    fun addDeviceByIp(ip: String, port: Int = 1400) {
+        discoveryJob?.cancel()
+        discoveryJob = scope.launch {
+            _discoveryState.value = DiscoveryState.Searching
+            val clean = ip.trim()
+            if (clean.isEmpty()) {
+                _discoveryState.value = DiscoveryState.Error("IP vuoto")
+                return@launch
+            }
+            try {
+                val found = discovery.fetchByIp(clean, port)
+                if (found == null) {
+                    _discoveryState.value = DiscoveryState.Error("Nessuna risposta da $clean:$port")
+                    return@launch
+                }
+                // Merge with existing devices (dedup by UDN).
+                val merged = (_devices.value + found).distinctBy { it.udn }
+                _devices.value = merged
+                _discoveryState.value = DiscoveryState.Found(merged.size)
+                Timber.i("UPnP manual add: %s", found.displayName)
+            } catch (e: Exception) {
+                Timber.w(e, "UPnP manual add failed for %s", clean)
+                _discoveryState.value = DiscoveryState.Error(e.message ?: "errore")
+            }
         }
     }
 
@@ -134,6 +199,7 @@ class UpnpCastController(
             )
             _connectionState.value = ConnectionState.Connected(device)
             startPollingLocked()
+            rememberDevice(device)
             Timber.i("UPnP connected to %s (volume=%d)", device.displayName, initialVolume)
         } catch (e: Exception) {
             Timber.w(e, "UPnP connect failed for %s", device.displayName)
@@ -277,9 +343,93 @@ class UpnpCastController(
         }
     }
 
+    // ---------------------------------------------------------------------
+    // Known devices persistence
+    // ---------------------------------------------------------------------
+    private fun rememberDevice(device: SonosDevice) {
+        val entry = device.toKnown(System.currentTimeMillis())
+        val current = _knownDevices.value
+        // MRU: move to front (or add), dedup by UDN, cap at MAX_KNOWN.
+        val merged = (listOf(entry) + current.filter { it.udn != entry.udn })
+            .take(MAX_KNOWN)
+        _knownDevices.value = merged
+        scope.launch { persistKnownDevices(merged) }
+    }
+
+    /** Remove a previously remembered device. */
+    fun forgetKnown(udn: String) {
+        val updated = _knownDevices.value.filterNot { it.udn == udn }
+        _knownDevices.value = updated
+        scope.launch { persistKnownDevices(updated) }
+    }
+
+    /**
+     * Reconnect to a known device by re-fetching its device description
+     * from the stored IP, then calling [connect]. If the IP has changed
+     * (DHCP reshuffle, etc.) this returns false and the user should run
+     * discovery.
+     */
+    suspend fun reconnectKnown(known: KnownSonosDevice): Boolean {
+        val ip = known.ip
+        val fresh = try {
+            discovery.fetchByIp(ip)
+        } catch (e: Exception) {
+            Timber.w(e, "reconnectKnown: fetchByIp failed for %s", ip)
+            null
+        }
+        if (fresh == null) {
+            _discoveryState.value = DiscoveryState.Error(
+                "Impossibile contattare ${known.displayName} a $ip — riprova discovery"
+            )
+            return false
+        }
+        // Merge into devices list so the UI can reflect "found".
+        val merged = (_devices.value + fresh).distinctBy { it.udn }
+        _devices.value = merged
+        connect(fresh)
+        return connectionState.value is ConnectionState.Connected
+    }
+
+    private suspend fun persistKnownDevices(list: List<KnownSonosDevice>) {
+        try {
+            val encoded = json.encodeToString(
+                ListSerializer(KnownSonosDevice.serializer()),
+                list,
+            )
+            context.dataStore.edit { it[KnownSonosDevicesKey] = encoded }
+        } catch (e: Exception) {
+            Timber.w(e, "Failed to persist known Sonos devices")
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // Connection verification (for app resume / heartbeat)
+    // ---------------------------------------------------------------------
+    /**
+     * Verify the active connection by issuing a cheap [AVTransport.getTransportInfo]
+     * call. If it fails, downgrade to Disconnected. Safe to call at any time
+     * and on every resume — it's a no-op when not connected.
+     */
+    suspend fun verifyActiveConnection() {
+        val av = avTransport ?: return
+        val device = activeDevice ?: return
+        try {
+            av.getTransportInfo()
+            // still alive; nothing to do
+        } catch (e: Exception) {
+            Timber.i("UPnP connection to %s lost (%s) — marking disconnected",
+                device.displayName, e.message)
+            commandMutex.withLock { disconnectInternalLocked() }
+        }
+    }
+
     /** Release all background work. Call from host service's onDestroy. */
     fun shutdown() {
         scope.cancel()
+    }
+
+    private companion object {
+        const val MAX_KNOWN = 5
     }
 }
 

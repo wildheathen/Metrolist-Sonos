@@ -24,6 +24,7 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -42,6 +43,7 @@ import com.metrolist.music.ui.component.IconButton
 import com.metrolist.music.ui.utils.backToMain
 import com.metrolist.music.upnp.ConnectionState
 import com.metrolist.music.upnp.DiscoveryState
+import com.metrolist.music.upnp.KnownSonosDevice
 import com.metrolist.music.upnp.SonosDevice
 import com.metrolist.music.viewmodels.SonosTestViewModel
 
@@ -58,9 +60,17 @@ fun SonosTestScreen(
     val discoveryState by viewModel.discoveryState.collectAsState()
     val connectionState by viewModel.connectionState.collectAsState()
     val playbackState by viewModel.playbackState.collectAsState()
+    val knownDevices by viewModel.knownDevices.collectAsState()
 
     var testUrl by rememberSaveable { mutableStateOf(DEFAULT_TEST_URL) }
     var volumeDraft by remember { mutableStateOf<Int?>(null) }
+    var manualIp by rememberSaveable { mutableStateOf("") }
+
+    // On first composition, ping the active device (if any) to verify it's
+    // still reachable. Silently downgrades to Disconnected if not.
+    LaunchedEffect(Unit) {
+        viewModel.verifyActiveConnection()
+    }
 
     Column(
         modifier = Modifier
@@ -69,6 +79,32 @@ fun SonosTestScreen(
             .padding(horizontal = 16.dp),
     ) {
         Spacer(Modifier.height(8.dp))
+
+        // ---- Known devices (recents) -------------------------------------------
+        if (knownDevices.isNotEmpty()) {
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp)) {
+                    Text(
+                        "Dispositivi recenti",
+                        style = MaterialTheme.typography.titleMedium,
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "Tap per riconnettere senza SSDP",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    knownDevices.forEach { known ->
+                        KnownDeviceRow(
+                            known = known,
+                            onReconnect = { viewModel.reconnectKnown(known) },
+                            onForget = { viewModel.forgetKnown(known.udn) },
+                        )
+                    }
+                }
+            }
+            Spacer(Modifier.height(12.dp))
+        }
 
         // ---- Discovery section --------------------------------------------------
         Card(modifier = Modifier.fillMaxWidth()) {
@@ -95,11 +131,38 @@ fun SonosTestScreen(
                     text = when (val s = discoveryState) {
                         DiscoveryState.Idle -> "Nessuna ricerca in corso."
                         DiscoveryState.Searching -> "Ricerca SSDP in corso..."
-                        is DiscoveryState.Found -> "Trovati ${s.count} device."
+                        is DiscoveryState.Found ->
+                            if (s.count == 0) "Nessun device trovato. Prova di nuovo o inserisci IP manualmente."
+                            else "Trovati ${s.count} device."
                         is DiscoveryState.Error -> "Errore: ${s.message}"
                     },
                     style = MaterialTheme.typography.bodySmall,
                 )
+
+                Spacer(Modifier.height(12.dp))
+
+                // Manual IP fallback (bypasses SSDP)
+                Text(
+                    "IP manuale (bypassa SSDP)",
+                    style = MaterialTheme.typography.labelMedium,
+                )
+                Spacer(Modifier.height(4.dp))
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    OutlinedTextField(
+                        value = manualIp,
+                        onValueChange = { manualIp = it.trim() },
+                        placeholder = { Text("192.168.1.101") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Button(
+                        onClick = { if (manualIp.isNotBlank()) viewModel.addDeviceByIp(manualIp) },
+                        enabled = manualIp.isNotBlank() && discoveryState !is DiscoveryState.Searching,
+                    ) { Text("Aggiungi") }
+                }
             }
         }
 
@@ -255,6 +318,32 @@ private fun DeviceRow(
             isConnected -> OutlinedButton(onClick = onDisconnect) { Text("Disconnetti") }
             else -> Button(onClick = onConnect, enabled = device.isUsable) { Text("Connetti") }
         }
+    }
+}
+
+@Composable
+private fun KnownDeviceRow(
+    known: KnownSonosDevice,
+    onReconnect: () -> Unit,
+    onForget: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(known.displayName, style = MaterialTheme.typography.bodyMedium)
+            Text(
+                "${known.ip}",
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+        Spacer(Modifier.width(4.dp))
+        OutlinedButton(onClick = onReconnect) { Text("Connetti") }
+        Spacer(Modifier.width(4.dp))
+        OutlinedButton(onClick = onForget) { Text("Rimuovi") }
     }
 }
 
