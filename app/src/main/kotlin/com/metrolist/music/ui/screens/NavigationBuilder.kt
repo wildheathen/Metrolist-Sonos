@@ -53,6 +53,7 @@ import com.metrolist.music.ui.screens.settings.PlayerSettings
 import com.metrolist.music.ui.screens.settings.PrivacySettings
 import com.metrolist.music.ui.screens.settings.RomanizationSettings
 import com.metrolist.music.ui.screens.settings.SettingsScreen
+import com.metrolist.music.ui.screens.settings.SonosTestScreen
 import com.metrolist.music.ui.screens.settings.StorageSettings
 import com.metrolist.music.ui.screens.settings.ThemeScreen
 import com.metrolist.music.ui.screens.settings.UpdaterScreen
@@ -411,6 +412,10 @@ fun NavGraphBuilder.navigationBuilder(
 
     composable("settings/about") {
         AboutScreen(navController)
+    }
+
+    composable("settings/sonos_upnp") {
+        SonosTestScreen(navController)
     }
 
     composable("login") {
