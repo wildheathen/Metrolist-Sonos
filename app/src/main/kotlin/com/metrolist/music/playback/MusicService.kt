@@ -620,6 +620,29 @@ class MusicService :
                 }
         }
 
+        // When the Sonos Cast feature is toggled OFF while we are actively
+        // connected, force-disconnect the controller. The ConnectionState
+        // flow will then emit Disconnected, which the observer above reacts
+        // to by swapping back to the local ExoPlayer — restoring the user's
+        // previous playback seamlessly. Without this, flipping the toggle
+        // off would leave the app stuck on the UpnpPlayer until the user
+        // manually disconnected from the dev test screen.
+        scope.launch {
+            dataStore.data
+                .map { it[SonosCastEnabledKey] ?: false }
+                .distinctUntilChanged()
+                .collect { enabled ->
+                    if (!enabled &&
+                        upnpCastController.connectionState.value is
+                            com.metrolist.music.upnp.ConnectionState.Connected
+                    ) {
+                        Timber.tag("MusicService")
+                            .i("Sonos Cast toggled off while connected — disconnecting")
+                        upnpCastController.disconnect()
+                    }
+                }
+        }
+
         // Update lyrics provider order preference
         // Collecting this flow activates the internal map that updates lyricsProviders in LyricsHelper
         lyricsHelper.preferred.collectLatest(scope) {}
