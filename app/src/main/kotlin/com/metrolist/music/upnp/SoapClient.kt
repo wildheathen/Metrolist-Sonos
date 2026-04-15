@@ -6,6 +6,7 @@ import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
+import io.ktor.http.HeaderValueParam
 import io.ktor.http.contentType
 import io.ktor.http.isSuccess
 import org.xmlpull.v1.XmlPullParser
@@ -25,6 +26,14 @@ import java.io.StringReader
 internal class SoapClient(
     private val httpClient: HttpClient,
 ) {
+    private companion object {
+        /** `text/xml; charset=utf-8` — built directly to avoid Ktor module/version drift. */
+        val XML_UTF8 = ContentType(
+            "text",
+            "xml",
+            listOf(HeaderValueParam("charset", "utf-8"))
+        )
+    }
 
     /**
      * Invoke a UPnP action.
@@ -49,7 +58,7 @@ internal class SoapClient(
             httpClient.post(controlUrl) {
                 header("SOAPAction", soapAction)
                 header("User-Agent", Upnp.USER_AGENT)
-                contentType(ContentType.Text.Xml.withCharset(Charsets.UTF_8))
+                contentType(XML_UTF8)
                 setBody(body)
             }
         } catch (e: Exception) {
