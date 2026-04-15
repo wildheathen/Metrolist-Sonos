@@ -134,6 +134,7 @@ import com.metrolist.music.constants.ShufflePlaylistFirstKey
 import com.metrolist.music.constants.SimilarContent
 import com.metrolist.music.constants.SkipSilenceInstantKey
 import com.metrolist.music.constants.SkipSilenceKey
+import com.metrolist.music.constants.SonosCastEnabledKey
 import com.metrolist.music.db.entities.Event
 import com.metrolist.music.db.entities.FormatEntity
 import com.metrolist.music.db.entities.LyricsEntity
@@ -616,36 +617,52 @@ class MusicService :
         // Observe UPnP (Sonos) cast connection state and swap the active
         // player on MediaSession when it changes. See [swapActivePlayer]
         // for the listener re-attach dance.
+        //
+        // Gated on [SonosCastEnabledKey] so that the Phase 3a test screen can
+        // legitimately connect to a Sonos (to probe the UPnP stack) without
+        // hijacking the app's active player. While the preference is false we
+        // simply ignore controller state transitions; the swap is skipped.
         scope.launch {
-            upnpCastController.connectionState.collect { state ->
-                when (state) {
-                    is com.metrolist.music.upnp.ConnectionState.Connected -> {
-                        val up = upnpPlayer ?: UpnpPlayer(
-                            controller = upnpCastController,
-                            scope = scope,
-                            streamUrlProvider = { mediaId -> getStreamUrl(mediaId) },
-                        ).also { upnpPlayer = it }
+            combine(
+                upnpCastController.connectionState,
+                dataStore.data
+                    .map { it[SonosCastEnabledKey] ?: false }
+                    .distinctUntilChanged(),
+            ) { state, enabled -> state to enabled }
+                .collect { (state, enabled) ->
+                    if (!enabled) {
+                        // Feature off: do not take over playback even if the
+                        // controller reports Connected (e.g. dev test screen).
+                        return@collect
+                    }
+                    when (state) {
+                        is com.metrolist.music.upnp.ConnectionState.Connected -> {
+                            val up = upnpPlayer ?: UpnpPlayer(
+                                controller = upnpCastController,
+                                scope = scope,
+                                streamUrlProvider = { mediaId -> getStreamUrl(mediaId) },
+                            ).also { upnpPlayer = it }
 
-                        // Transfer the current queue so next/previous stays sensible.
-                        val queueItems = (0 until player.mediaItemCount).map { player.getMediaItemAt(it) }
-                        val currentIndex = player.currentMediaItemIndex.coerceAtLeast(0)
-                        val currentPos = player.currentPosition.coerceAtLeast(0)
-                        if (queueItems.isNotEmpty()) {
-                            up.setMediaItems(queueItems, currentIndex, currentPos)
+                            // Transfer the current queue so next/previous stays sensible.
+                            val queueItems = (0 until player.mediaItemCount).map { player.getMediaItemAt(it) }
+                            val currentIndex = player.currentMediaItemIndex.coerceAtLeast(0)
+                            val currentPos = player.currentPosition.coerceAtLeast(0)
+                            if (queueItems.isNotEmpty()) {
+                                up.setMediaItems(queueItems, currentIndex, currentPos)
+                            }
+
+                            // Pause the local player so we don't hear two sources.
+                            if (player.isPlaying) player.pause()
+
+                            swapActivePlayer(up)
                         }
-
-                        // Pause the local player so we don't hear two sources.
-                        if (player.isPlaying) player.pause()
-
-                        swapActivePlayer(up)
+                        is com.metrolist.music.upnp.ConnectionState.Disconnected,
+                        is com.metrolist.music.upnp.ConnectionState.Error -> {
+                            swapActivePlayer(player)
+                        }
+                        else -> { /* Connecting: no-op, wait for Connected */ }
                     }
-                    is com.metrolist.music.upnp.ConnectionState.Disconnected,
-                    is com.metrolist.music.upnp.ConnectionState.Error -> {
-                        swapActivePlayer(player)
-                    }
-                    else -> { /* Connecting: no-op, wait for Connected */ }
                 }
-            }
         }
 
         // Update lyrics provider order preference
