@@ -739,6 +739,19 @@ class MusicService :
                         }
                     }
                 }
+
+                // If we're actively casting, re-probe the Sonos on every
+                // network change (gain or loss). verifyActiveConnection()
+                // issues a cheap getTransportInfo() call; on failure it
+                // downgrades the controller to Disconnected, which our
+                // state observer translates into a swap back to the local
+                // ExoPlayer. When the network comes back and the Sonos is
+                // still reachable this is a fast no-op.
+                if (upnpCastController.connectionState.value is
+                    com.metrolist.music.upnp.ConnectionState.Connected
+                ) {
+                    upnpCastController.verifyActiveConnection()
+                }
             }
         }
 
