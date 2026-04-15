@@ -112,6 +112,20 @@ fun SettingsScreen(
 
         Spacer(modifier = Modifier.height(16.dp))
 
+        // Cast Section (Sonos UPnP beta — independent from Google Cast)
+        Material3SettingsGroup(
+            title = "Cast",
+            items = listOf(
+                Material3SettingsItem(
+                    icon = painterResource(R.drawable.cast),
+                    title = { Text("Sonos UPnP (beta)") },
+                    onClick = { navController.navigate("settings/sonos_upnp") }
+                )
+            )
+        )
+
+        Spacer(modifier = Modifier.height(16.dp))
+
         // Android Auto Section — only shown if Android Auto is installed
         if (hasAndroidAuto) {
             Material3SettingsGroup(
