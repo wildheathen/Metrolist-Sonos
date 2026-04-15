@@ -290,6 +290,41 @@ class UpnpCastController(
         }
     }
 
+    /**
+     * Prefetch the next track's URI on the Sonos so it can transition gaplessly
+     * when the current one ends (AVTransport `SetNextAVTransportURI`). Passing
+     * an empty [url] clears any previously-queued next URI.
+     *
+     * @return `true` if the SOAP call succeeded, `false` otherwise.
+     */
+    suspend fun setNextMedia(
+        url: String,
+        title: String,
+        artist: String = "",
+        album: String = "",
+        albumArtUrl: String = "",
+        mimeType: String = "audio/mpeg",
+        durationMs: Long? = null,
+    ): Boolean = commandMutex.withLock {
+        val av = avTransport ?: return@withLock false
+        val metadata = if (url.isBlank()) "" else DidlBuilder.audioItem(
+            url = url,
+            title = title,
+            creator = artist,
+            album = album,
+            albumArtUri = albumArtUrl,
+            mimeType = mimeType,
+            durationMs = durationMs,
+        )
+        try {
+            av.setNextAvTransportUri(url, metadata)
+            true
+        } catch (e: Exception) {
+            Timber.w(e, "setNextMedia failed")
+            false
+        }
+    }
+
     suspend fun play() = commandMutex.withLock {
         runSafely("play") { avTransport?.play() }
         _playbackState.value = _playbackState.value.copy(isPlaying = true)

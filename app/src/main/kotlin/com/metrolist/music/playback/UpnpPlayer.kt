@@ -67,6 +67,12 @@ class UpnpPlayer(
     @Volatile private var lastPlayback: PlaybackState = PlaybackState()
     @Volatile private var connected: Boolean = false
 
+    // Gapless preload bookkeeping. Holds the mediaId of the next track we
+    // already sent to the Sonos via SetNextAVTransportURI so we don't re-issue
+    // the SOAP call on every polling tick. Cleared whenever the current track
+    // changes (so the NEW "next" is considered for preloading).
+    @Volatile private var lastPreloadedNextMediaId: String = ""
+
     private var observerJob: Job? = null
 
     init {
@@ -74,10 +80,14 @@ class UpnpPlayer(
             combine(controller.playbackState, controller.connectionState) { pb, conn ->
                 lastPlayback = pb
                 connected = conn is ConnectionState.Connected
-                Unit
-            }.collect {
+                pb
+            }.collect { pb ->
                 // Hop to main looper because SimpleBasePlayer requires it.
                 withContext(Dispatchers.Main) { invalidateState() }
+                // Piggyback on the 1Hz polling tick to preload the next track.
+                // Runs on the controller flow's dispatcher (IO) — safe to do
+                // network work here.
+                maybePreloadNext(pb)
             }
         }
     }
@@ -186,6 +196,7 @@ class UpnpPlayer(
                 mediaItemIndex in items.indices
             if (wantsDifferentItem) {
                 currentIndex = mediaItemIndex
+                resetNextPreload()
                 loadCurrentOnRemote(startOffsetMs = positionMs.coerceAtLeast(0))
             } else {
                 controller.seek(positionMs.coerceAtLeast(0).milliseconds)
@@ -201,6 +212,7 @@ class UpnpPlayer(
     ): ListenableFuture<*> {
         items = mediaItems.toList()
         currentIndex = startIndex.coerceIn(0, (items.size - 1).coerceAtLeast(0))
+        resetNextPreload()
         scope.launch {
             if (items.isNotEmpty()) loadCurrentOnRemote(startPositionMs.coerceAtLeast(0))
         }
@@ -237,6 +249,7 @@ class UpnpPlayer(
             items = listCopy
             currentIndex = startIndex.coerceIn(0, (items.size - 1).coerceAtLeast(0))
         }
+        resetNextPreload()
         val ok = loadCurrentOnRemote(startPositionMs.coerceAtLeast(0))
         // Republish the state so the new playlist snapshot reaches the UI even
         // if the controller flow did not emit (loadMedia may have updated no
@@ -280,6 +293,62 @@ class UpnpPlayer(
         // are surfaced to the UI via playbackState.lastError.
         Timber.i("UpnpPlayer: first load failed for %s — refreshing URL and retrying", mediaId)
         return tryLoadForCurrent(item, mediaId, startOffsetMs)
+    }
+
+    /**
+     * When the Sonos reports being >= 90% through the current track, prefetch
+     * the next item's stream URL and push it as the `SetNextAVTransportURI`.
+     * This lets the Sonos transition gaplessly when the current track ends.
+     *
+     * Idempotent: tracked via [lastPreloadedNextMediaId] so we only issue the
+     * SOAP call once per track. A track change naturally invalidates the cached
+     * id via [resetNextPreload].
+     *
+     * MVP scope: we do not refresh the preloaded URL's TTL. If the Sonos
+     * doesn't fire the next track within ~6h of the preload, it may fail; in
+     * that case the user will briefly hear silence + an error and normal
+     * resume-next behavior via [handleSeek] will recover.
+     */
+    private suspend fun maybePreloadNext(pb: PlaybackState) {
+        if (!connected) return
+        val durMs = pb.duration.inWholeMilliseconds
+        val posMs = pb.position.inWholeMilliseconds
+        if (durMs <= 0 || posMs <= 0) return
+        val pct = posMs.toDouble() / durMs
+        if (pct < 0.9) return
+        val nextIdx = currentIndex + 1
+        val nextItem = items.getOrNull(nextIdx) ?: return
+        val nextId = nextItem.mediaId
+        if (nextId.isBlank() || nextId == lastPreloadedNextMediaId) return
+
+        val url = try {
+            streamUrlProvider(nextId)
+        } catch (e: Exception) {
+            Timber.w(e, "UpnpPlayer: preload streamUrlProvider failed for %s", nextId)
+            null
+        } ?: return
+
+        val meta = nextItem.mediaMetadata
+        val ok = controller.setNextMedia(
+            url = url,
+            title = meta.title?.toString().orEmpty().ifBlank { "Metrolist" },
+            artist = meta.artist?.toString().orEmpty(),
+            album = meta.albumTitle?.toString().orEmpty(),
+            albumArtUrl = meta.artworkUri?.toString().orEmpty(),
+        )
+        if (ok) {
+            lastPreloadedNextMediaId = nextId
+            Timber.i("UpnpPlayer: preloaded next (idx=%d, id=%s)", nextIdx, nextId)
+        }
+    }
+
+    /**
+     * Invalidate any previously-sent SetNextAVTransportURI so the next preload
+     * tick considers the new "next in line". Called whenever the current
+     * item changes (seek across tracks, prime, explicit reload).
+     */
+    private fun resetNextPreload() {
+        lastPreloadedNextMediaId = ""
     }
 
     /**
