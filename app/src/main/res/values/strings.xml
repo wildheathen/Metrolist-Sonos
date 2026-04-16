@@ -378,4 +378,5 @@
     <string name="sonos_cast_error_on_device">Impossibile riprodurre su %1$s: %2$s</string>
     <string name="sonos_cast_error_generic">Errore cast Sonos: %s</string>
     <string name="sonos_cast_prime_failed">Avvio Sonos non riuscito — riproduzione locale in corso</string>
+    <string name="sonos_error_share_subject">Errore Sonos cast</string>
 </resources>

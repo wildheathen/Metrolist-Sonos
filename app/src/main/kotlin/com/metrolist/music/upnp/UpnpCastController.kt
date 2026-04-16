@@ -275,19 +275,63 @@ class UpnpCastController(
         try {
             av.setAvTransportUri(url, metadata)
             av.play()
-            _playbackState.value = _playbackState.value.copy(
-                currentUrl = url,
-                currentTitle = title,
-                currentArtist = artist,
-                isPlaying = true,
-                lastError = null,
-            )
-            true
         } catch (e: Exception) {
-            Timber.w(e, "loadMedia failed")
-            _playbackState.value = _playbackState.value.copy(lastError = e.message)
-            false
+            Timber.w(e, "loadMedia SOAP failed")
+            _playbackState.value = _playbackState.value.copy(
+                lastError = "SOAP error: ${e.message ?: e::class.simpleName} | url=${url.take(120)}",
+            )
+            return@withLock false
         }
+
+        // Verify the Sonos actually entered PLAYING. A SOAP 200 OK on
+        // SetAVTransportURI/Play does NOT guarantee the device is streaming —
+        // if the URL is rejected (codec mismatch, googlevideo IP-binding,
+        // 4xx on the underlying GET) the transport silently falls back to
+        // STOPPED and the UI gets stuck at 0:00 (issue #2). Poll a few times
+        // for the transport state to confirm PLAYING before declaring success.
+        var info: TransportInfo? = null
+        val maxAttempts = 6 // up to ~3s of waiting (6 × 500ms)
+        var attempt = 0
+        while (attempt < maxAttempts) {
+            delay(500)
+            info = try {
+                av.getTransportInfo()
+            } catch (e: Exception) {
+                Timber.v(e, "verify-after-play: getTransportInfo tick failed")
+                null
+            }
+            when {
+                info?.isPlaying == true -> break
+                info?.isStopped == true -> break // terminal — no point polling further
+                else -> { /* TRANSITIONING or null → keep waiting */ }
+            }
+            attempt++
+        }
+
+        if (info?.isPlaying != true) {
+            val detail = if (info != null) {
+                "transport=${info.state}/${info.status}, url=${url.take(120)}"
+            } else {
+                "no transport response after Play, url=${url.take(120)}"
+            }
+            val errMsg = "Sonos non è entrato in PLAYING dopo Play (attempts=$attempt, $detail)"
+            Timber.w(errMsg)
+            _playbackState.value = _playbackState.value.copy(
+                currentUrl = "",
+                isPlaying = false,
+                lastError = errMsg,
+            )
+            return@withLock false
+        }
+
+        _playbackState.value = _playbackState.value.copy(
+            currentUrl = url,
+            currentTitle = title,
+            currentArtist = artist,
+            isPlaying = true,
+            lastError = null,
+        )
+        true
     }
 
     /**

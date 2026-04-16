@@ -36,10 +36,14 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import android.content.Intent
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
@@ -264,13 +268,34 @@ fun SonosTestScreen(
                             formatSec(playbackState.duration.inWholeSeconds),
                         style = MaterialTheme.typography.bodySmall,
                     )
-                    playbackState.lastError?.let {
-                        Spacer(Modifier.height(4.dp))
+                    playbackState.lastError?.let { err ->
+                        Spacer(Modifier.height(8.dp))
+                        val clipboard = LocalClipboardManager.current
+                        val context = LocalContext.current
                         Text(
-                            stringResource(R.string.sonos_error_prefix, it),
+                            stringResource(R.string.sonos_error_prefix, err),
                             color = MaterialTheme.colorScheme.error,
                             style = MaterialTheme.typography.bodySmall,
                         )
+                        Spacer(Modifier.height(4.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(onClick = {
+                                clipboard.setText(AnnotatedString(err))
+                            }) { Text(stringResource(R.string.copy)) }
+                            OutlinedButton(onClick = {
+                                val sendIntent = Intent(Intent.ACTION_SEND).apply {
+                                    type = "text/plain"
+                                    putExtra(
+                                        Intent.EXTRA_SUBJECT,
+                                        context.getString(R.string.sonos_error_share_subject),
+                                    )
+                                    putExtra(Intent.EXTRA_TEXT, err)
+                                }
+                                context.startActivity(
+                                    Intent.createChooser(sendIntent, null),
+                                )
+                            }) { Text(stringResource(R.string.share)) }
+                        }
                     }
                 }
             }
