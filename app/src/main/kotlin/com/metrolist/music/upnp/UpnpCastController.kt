@@ -263,22 +263,36 @@ class UpnpCastController(
             Timber.w("loadMedia called without active UPnP connection")
             return@withLock false
         }
+        // Wrap HTTP(S) URLs in Sonos's "x-rincon-mp3radio:" scheme so the
+        // device treats the URL as a generic internet-radio stream and skips
+        // the strict container/codec enforcement it applies to regular
+        // musicTrack items. Googlevideo URLs are DASH-segmented, not plain
+        // audio files, so Sonos rejects them as musicTracks — but accepts
+        // them as radio streams. Matches the approach used by
+        // node-sonos-http-api and similar integrations. See issue #2.
+        val playUrl = when {
+            url.startsWith("http://", ignoreCase = true) ||
+                url.startsWith("https://", ignoreCase = true) ->
+                "x-rincon-mp3radio:$url"
+            else -> url
+        }
         val metadata = DidlBuilder.audioItem(
-            url = url,
+            url = playUrl,
             title = title,
             creator = artist,
             album = album,
             albumArtUri = albumArtUrl,
             mimeType = mimeType,
             durationMs = durationMs,
+            asRadio = true,
         )
         try {
-            av.setAvTransportUri(url, metadata)
+            av.setAvTransportUri(playUrl, metadata)
             av.play()
         } catch (e: Exception) {
             Timber.w(e, "loadMedia SOAP failed")
             _playbackState.value = _playbackState.value.copy(
-                lastError = "SOAP error: ${e.message ?: e::class.simpleName} | url=${url.take(120)}",
+                lastError = "SOAP error: ${e.message ?: e::class.simpleName} | url=${playUrl.take(140)}",
             )
             return@withLock false
         }
@@ -310,9 +324,9 @@ class UpnpCastController(
 
         if (info?.isPlaying != true) {
             val detail = if (info != null) {
-                "transport=${info.state}/${info.status}, url=${url.take(120)}"
+                "transport=${info.state}/${info.status}, url=${playUrl.take(140)}"
             } else {
-                "no transport response after Play, url=${url.take(120)}"
+                "no transport response after Play, url=${playUrl.take(140)}"
             }
             val errMsg = "Sonos non è entrato in PLAYING dopo Play (attempts=$attempt, $detail)"
             Timber.w(errMsg)
@@ -325,7 +339,7 @@ class UpnpCastController(
         }
 
         _playbackState.value = _playbackState.value.copy(
-            currentUrl = url,
+            currentUrl = playUrl,
             currentTitle = title,
             currentArtist = artist,
             isPlaying = true,
@@ -351,17 +365,27 @@ class UpnpCastController(
         durationMs: Long? = null,
     ): Boolean = commandMutex.withLock {
         val av = avTransport ?: return@withLock false
-        val metadata = if (url.isBlank()) "" else DidlBuilder.audioItem(
-            url = url,
+        // Match the x-rincon wrap applied in loadMedia so gapless preload
+        // uses the same radio-stream handling path and survives Sonos's
+        // strict format checks.
+        val nextUrl = when {
+            url.startsWith("http://", ignoreCase = true) ||
+                url.startsWith("https://", ignoreCase = true) ->
+                "x-rincon-mp3radio:$url"
+            else -> url
+        }
+        val metadata = if (nextUrl.isBlank()) "" else DidlBuilder.audioItem(
+            url = nextUrl,
             title = title,
             creator = artist,
             album = album,
             albumArtUri = albumArtUrl,
             mimeType = mimeType,
             durationMs = durationMs,
+            asRadio = true,
         )
         try {
-            av.setNextAvTransportUri(url, metadata)
+            av.setNextAvTransportUri(nextUrl, metadata)
             true
         } catch (e: Exception) {
             Timber.w(e, "setNextMedia failed")

@@ -26,6 +26,7 @@ internal object DidlBuilder {
         albumArtUri: String = "",
         mimeType: String = "audio/mpeg",
         durationMs: Long? = null,
+        asRadio: Boolean = false,
     ): String {
         val resAttrs = buildString {
             append("protocolInfo=\"http-get:*:")
@@ -36,6 +37,15 @@ internal object DidlBuilder {
                 append(formatUpnpDuration(it))
                 append('"')
             }
+        }
+        val upnpClass = if (asRadio) {
+            // Sonos treats audioBroadcast as a continuous internet-radio stream
+            // and skips the strict container/codec checks it applies to
+            // musicTrack items — necessary for googlevideo URLs which don't
+            // serve plain file-style audio (they're DASH-segmented).
+            "object.item.audioItem.audioBroadcast"
+        } else {
+            "object.item.audioItem.musicTrack"
         }
         return buildString {
             append("<DIDL-Lite xmlns=\"").append(Upnp.NS_DIDL).append('"')
@@ -54,7 +64,7 @@ internal object DidlBuilder {
             if (albumArtUri.isNotBlank()) {
                 append("<upnp:albumArtURI>").append(xmlEscape(albumArtUri)).append("</upnp:albumArtURI>")
             }
-            append("<upnp:class>object.item.audioItem.musicTrack</upnp:class>")
+            append("<upnp:class>").append(upnpClass).append("</upnp:class>")
             append("<res ").append(resAttrs).append('>').append(xmlEscape(url)).append("</res>")
             append("</item>")
             append("</DIDL-Lite>")
