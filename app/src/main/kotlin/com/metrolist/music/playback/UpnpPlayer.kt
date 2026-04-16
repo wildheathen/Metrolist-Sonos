@@ -166,6 +166,7 @@ class UpnpPlayer(
                 if (lastPlayback.currentUrl.isBlank() && currentIndex in items.indices) {
                     // First play on an uninitialized remote → load before playing
                     loadCurrentOnRemote()
+                    syncSnapshotFromController()
                 } else {
                     controller.play()
                 }
@@ -198,6 +199,7 @@ class UpnpPlayer(
                 currentIndex = mediaItemIndex
                 resetNextPreload()
                 loadCurrentOnRemote(startOffsetMs = positionMs.coerceAtLeast(0))
+                syncSnapshotFromController()
             } else {
                 controller.seek(positionMs.coerceAtLeast(0).milliseconds)
             }
@@ -214,7 +216,10 @@ class UpnpPlayer(
         currentIndex = startIndex.coerceIn(0, (items.size - 1).coerceAtLeast(0))
         resetNextPreload()
         scope.launch {
-            if (items.isNotEmpty()) loadCurrentOnRemote(startPositionMs.coerceAtLeast(0))
+            if (items.isNotEmpty()) {
+                loadCurrentOnRemote(startPositionMs.coerceAtLeast(0))
+                syncSnapshotFromController()
+            }
         }
         return Futures.immediateVoidFuture()
     }
@@ -251,10 +256,7 @@ class UpnpPlayer(
         }
         resetNextPreload()
         val ok = loadCurrentOnRemote(startPositionMs.coerceAtLeast(0))
-        // Republish the state so the new playlist snapshot reaches the UI even
-        // if the controller flow did not emit (loadMedia may have updated no
-        // observable field beyond currentUrl).
-        withContext(Dispatchers.Main) { invalidateState() }
+        syncSnapshotFromController()
         return ok
     }
 
@@ -276,6 +278,21 @@ class UpnpPlayer(
     // ---------------------------------------------------------------------
     // Helpers
     // ---------------------------------------------------------------------
+
+    /**
+     * Eagerly read the latest controller state into the cached [lastPlayback]
+     * and [connected] fields, then request a Media3 state refresh. This bridges
+     * the gap between `loadMedia` updating the controller's StateFlow and the
+     * init-block observer processing the emission: without it, [getState()] may
+     * still see the stale "position=0, isPlaying=false" defaults from before
+     * the SOAP round-trip completed, causing a momentary "stuck at 0:00" flash.
+     */
+    private suspend fun syncSnapshotFromController() {
+        lastPlayback = controller.playbackState.value
+        connected = controller.connectionState.value is ConnectionState.Connected
+        withContext(Dispatchers.Main) { invalidateState() }
+    }
+
     private suspend fun loadCurrentOnRemote(startOffsetMs: Long = 0): Boolean {
         val item = items.getOrNull(currentIndex) ?: return false
         val mediaId = item.mediaId
