@@ -79,6 +79,7 @@ object YTPlayerUtils {
         playlistId: String? = null,
         audioQuality: AudioQuality,
         connectivityManager: ConnectivityManager,
+        preferAac: Boolean = false,
     ): Result<PlaybackData> = runCatching {
         Timber.tag(TAG).d("=== PLAYER RESPONSE FOR PLAYBACK ===")
         Timber.tag(TAG).d("videoId: $videoId")
@@ -230,6 +231,7 @@ object YTPlayerUtils {
                         responseToUse,
                         audioQuality,
                         connectivityManager,
+                        preferAac = preferAac,
                     )
 
                 if (format == null) {
@@ -419,17 +421,30 @@ object YTPlayerUtils {
         playerResponse: PlayerResponse,
         audioQuality: AudioQuality,
         connectivityManager: ConnectivityManager,
+        preferAac: Boolean = false,
     ): PlayerResponse.StreamingData.Format? {
-        Timber.tag(logTag).d("Finding format with audioQuality: $audioQuality, network metered: ${connectivityManager.isActiveNetworkMetered}")
+        Timber.tag(logTag).d("Finding format with audioQuality: $audioQuality, preferAac=$preferAac, network metered: ${connectivityManager.isActiveNetworkMetered}")
 
-        val format = playerResponse.streamingData?.adaptiveFormats
+        // Sonos UPnP cast path: bypass the opus preference and pick the best
+        // audio/mp4 (AAC) stream. Sonos doesn't decode Opus/WebM at all, so
+        // serving an opus stream — even via the local proxy — would just give
+        // SOAP 714 / silent STOPPED. AAC inside MP4 is on Sonos's supported
+        // codec list and works once we re-serve it with Content-Type audio/mp4.
+        val candidates = playerResponse.streamingData?.adaptiveFormats
             ?.filter { it.isAudio && it.isOriginal }
+            ?.let { all ->
+                if (preferAac) all.filter { it.mimeType.startsWith("audio/mp4") }
+                    .ifEmpty { all } // fall back to any audio if no AAC available
+                else all
+            }
+
+        val format = candidates
             ?.maxByOrNull {
                 it.bitrate * when (audioQuality) {
                     AudioQuality.AUTO -> if (connectivityManager.isActiveNetworkMetered) -1 else 1
                     AudioQuality.HIGH -> 1
                     AudioQuality.LOW -> -1
-                } + (if (it.mimeType.startsWith("audio/webm")) 10240 else 0) // prefer opus stream
+                } + (if (!preferAac && it.mimeType.startsWith("audio/webm")) 10240 else 0) // prefer opus stream when not casting to Sonos
             }
 
         if (format != null) {

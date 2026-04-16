@@ -29,6 +29,7 @@ import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 import timber.log.Timber
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -55,6 +56,7 @@ import kotlin.time.Duration.Companion.seconds
 class UpnpCastController(
     private val context: Context,
     private val httpClient: HttpClient,
+    private val proxy: SonosHttpProxy,
     private val defaultDispatcher: kotlinx.coroutines.CoroutineDispatcher = Dispatchers.IO,
 ) {
 
@@ -205,6 +207,13 @@ class UpnpCastController(
             _connectionState.value = ConnectionState.Connected(device)
             startPollingLocked()
             rememberDevice(device)
+            // Spin up the local HTTP proxy so we have a place to register
+            // upstream URLs once playback starts. Idempotent.
+            try {
+                proxy.start()
+            } catch (e: Exception) {
+                Timber.w(e, "Failed to start SonosHttpProxy")
+            }
             Timber.i("UPnP connected to %s (volume=%d)", device.displayName, initialVolume)
         } catch (e: Exception) {
             Timber.w(e, "UPnP connect failed for %s", device.displayName)
@@ -233,6 +242,12 @@ class UpnpCastController(
         renderingControl = null
         _playbackState.value = PlaybackState()
         _connectionState.value = ConnectionState.Disconnected
+        // Tear down the local proxy — there's no Sonos to serve to anymore.
+        try {
+            proxy.stop()
+        } catch (e: Exception) {
+            Timber.w(e, "Failed to stop SonosHttpProxy")
+        }
     }
 
     // ---------------------------------------------------------------------
@@ -263,28 +278,47 @@ class UpnpCastController(
             Timber.w("loadMedia called without active UPnP connection")
             return@withLock false
         }
-        // Wrap HTTP(S) URLs in Sonos's "x-rincon-mp3radio:" scheme so the
-        // device treats the URL as a generic internet-radio stream and skips
-        // the strict container/codec enforcement it applies to regular
-        // musicTrack items. Googlevideo URLs are DASH-segmented, not plain
-        // audio files, so Sonos rejects them as musicTracks — but accepts
-        // them as radio streams. Matches the approach used by
-        // node-sonos-http-api and similar integrations. See issue #2.
-        val playUrl = when {
+        // Route HTTP(S) URLs through the local SonosHttpProxy so the Sonos
+        // sees a stream served with Content-Type: audio/mp4 (the upstream
+        // googlevideo URL is rejected directly with SOAP 714 because it
+        // returns video/mp4). Non-HTTP URIs (file://, x-rincon-*) are
+        // already in formats Sonos accepts natively — pass through unchanged.
+        val playUrl = if (
             url.startsWith("http://", ignoreCase = true) ||
-                url.startsWith("https://", ignoreCase = true) ->
-                "x-rincon-mp3radio:$url"
-            else -> url
+            url.startsWith("https://", ignoreCase = true)
+        ) {
+            if (!proxy.isRunning) proxy.start()
+            val token = proxy.register(url)
+            proxy.proxyUrlFor(token) ?: url
+        } else {
+            url
         }
+
+        // Eagerly publish the known duration so the UI has a number to draw
+        // the seek bar against from the very first frame after Play. Without
+        // this, the slider sits at 0% (position / 0 = NaN) until the first
+        // polling tick brings the trackDuration back from Sonos — visible
+        // as "the time-elapsed counter advances but the bar doesn't move".
+        durationMs?.takeIf { it > 0 }?.let { dms ->
+            Timber.tag(TAG).i("loadMedia: eager duration=%d ms (title=%s)", dms, title.take(40))
+            _playbackState.value = _playbackState.value.copy(
+                duration = dms.milliseconds,
+            )
+        }
+        Timber.tag(TAG).i(
+            "loadMedia: title=%s | url=%s | durationMs=%s",
+            title.take(40), playUrl.take(80), durationMs?.toString() ?: "null",
+        )
+
         val metadata = DidlBuilder.audioItem(
             url = playUrl,
             title = title,
             creator = artist,
             album = album,
             albumArtUri = albumArtUrl,
-            mimeType = mimeType,
+            mimeType = "audio/mp4",
             durationMs = durationMs,
-            asRadio = true,
+            asRadio = false, // proxy serves real AAC/MP4 → musicTrack is fine
         )
         try {
             av.setAvTransportUri(playUrl, metadata)
@@ -337,6 +371,10 @@ class UpnpCastController(
             )
             return@withLock false
         }
+        Timber.tag(TAG).i(
+            "loadMedia: PLAYING confirmed after %d attempts (transport=%s/%s)",
+            attempt, info.state, info.status,
+        )
 
         _playbackState.value = _playbackState.value.copy(
             currentUrl = playUrl,
@@ -365,14 +403,17 @@ class UpnpCastController(
         durationMs: Long? = null,
     ): Boolean = commandMutex.withLock {
         val av = avTransport ?: return@withLock false
-        // Match the x-rincon wrap applied in loadMedia so gapless preload
-        // uses the same radio-stream handling path and survives Sonos's
-        // strict format checks.
-        val nextUrl = when {
+        // Same proxy routing as loadMedia: serve through SonosHttpProxy so
+        // Sonos sees audio/mp4 instead of video/mp4 from googlevideo.
+        val nextUrl = if (
             url.startsWith("http://", ignoreCase = true) ||
-                url.startsWith("https://", ignoreCase = true) ->
-                "x-rincon-mp3radio:$url"
-            else -> url
+            url.startsWith("https://", ignoreCase = true)
+        ) {
+            if (!proxy.isRunning) proxy.start()
+            val token = proxy.register(url)
+            proxy.proxyUrlFor(token) ?: url
+        } else {
+            url
         }
         val metadata = if (nextUrl.isBlank()) "" else DidlBuilder.audioItem(
             url = nextUrl,
@@ -380,9 +421,9 @@ class UpnpCastController(
             creator = artist,
             album = album,
             albumArtUri = albumArtUrl,
-            mimeType = mimeType,
+            mimeType = "audio/mp4",
             durationMs = durationMs,
-            asRadio = true,
+            asRadio = false,
         )
         try {
             av.setNextAvTransportUri(nextUrl, metadata)
@@ -394,27 +435,42 @@ class UpnpCastController(
     }
 
     suspend fun play() = commandMutex.withLock {
+        Timber.tag(TAG).i("play()")
         runSafely("play") { avTransport?.play() }
         _playbackState.value = _playbackState.value.copy(isPlaying = true)
     }
 
     suspend fun pause() = commandMutex.withLock {
+        Timber.tag(TAG).i("pause()")
         runSafely("pause") { avTransport?.pause() }
         _playbackState.value = _playbackState.value.copy(isPlaying = false)
     }
 
     suspend fun stop() = commandMutex.withLock {
+        Timber.tag(TAG).i("stop()")
         runSafely("stop") { avTransport?.stop() }
         _playbackState.value = _playbackState.value.copy(isPlaying = false, position = Duration.ZERO)
     }
 
     suspend fun seek(position: Duration) = commandMutex.withLock {
+        Timber.tag(TAG).i("seek(%d ms)", position.inWholeMilliseconds)
         runSafely("seek") { avTransport?.seek(position) }
+        // Anchor the optimistic position so the polling loop can spot
+        // bogus values (Sonos transiently reports 0:00 / the pre-seek
+        // position while it's still completing the seek) and reject them.
+        // We don't fully freeze the polling — that would also stop the
+        // natural advance of the slider during playback for the lock
+        // window. Instead the polling tick accepts a value only if it's
+        // within ±SEEK_PLAUSIBILITY_MS of the anchor (plus elapsed wall
+        // time, since playback keeps moving forward).
+        seekAnchorMs = System.currentTimeMillis()
+        seekAnchorPosition = position
         _playbackState.value = _playbackState.value.copy(position = position)
     }
 
     /** Set the remote volume (0..100). */
     suspend fun setVolume(volume: Int) = commandMutex.withLock {
+        Timber.tag(TAG).d("setVolume(%d)", volume)
         runSafely("setVolume") { renderingControl?.setVolume(volume) }
         _playbackState.value = _playbackState.value.copy(volume = volume.coerceIn(0, 100))
     }
@@ -427,6 +483,23 @@ class UpnpCastController(
     // ---------------------------------------------------------------------
     // Polling — keeps playbackState.position current while connected.
     // ---------------------------------------------------------------------
+    // Anchor for the most recent seek: when did we issue it (wall-clock ms)
+    // and what position did we ask for. The polling loop uses these to
+    // compute an "expected position" (anchor + elapsed) and reject Sonos
+    // reports that fall outside a plausibility window — i.e. the device's
+    // transient post-seek 0:00 hiccup. After SEEK_PLAUSIBILITY_WINDOW_MS the
+    // anchor is considered stale and we trust polling unconditionally again.
+    @Volatile private var seekAnchorMs: Long = 0L
+    @Volatile private var seekAnchorPosition: Duration = Duration.ZERO
+
+    /**
+     * True if a seek was issued in the last [SEEK_PLAUSIBILITY_WINDOW_MS].
+     * UpnpPlayer uses this to suppress the gapless preload while the Sonos
+     * transport is in a transitional state.
+     */
+    fun isSeekActive(): Boolean =
+        (System.currentTimeMillis() - seekAnchorMs) < SEEK_PLAUSIBILITY_WINDOW_MS
+
     private fun startPollingLocked() {
         pollingJob?.cancel()
         pollingJob = scope.launch {
@@ -435,19 +508,79 @@ class UpnpCastController(
                 try {
                     val info = av.getTransportInfo()
                     val pos = av.getPositionInfo()
-                    _playbackState.value = _playbackState.value.copy(
+                    val current = _playbackState.value
+                    val acceptedPosition = reconcilePosition(
+                        reported = pos.relativeTime,
+                        cached = current.position,
+                        isPlaying = info.isPlaying,
+                    )
+                    Timber.tag(TAG).v(
+                        "poll: state=%s/%s pos=%ds dur=%ds (reported=%ds, accepted=%ds, anchor=%dms ago)",
+                        info.state, info.status,
+                        acceptedPosition.inWholeSeconds, pos.trackDuration.inWholeSeconds,
+                        pos.relativeTime.inWholeSeconds, acceptedPosition.inWholeSeconds,
+                        if (seekAnchorMs > 0) System.currentTimeMillis() - seekAnchorMs else -1L,
+                    )
+                    _playbackState.value = current.copy(
                         isPlaying = info.isPlaying,
                         isTransitioning = info.isTransitioning,
-                        position = pos.relativeTime,
-                        duration = pos.trackDuration,
-                        currentUrl = pos.trackUri.ifBlank { _playbackState.value.currentUrl },
+                        position = acceptedPosition,
+                        // Keep the cached duration once we've learned it from
+                        // either the eager publish (loadMedia) or a previous
+                        // polling tick — Sonos sometimes reports trackDuration
+                        // = 0 transiently during track transitions, which
+                        // would otherwise wipe the slider scale and make the
+                        // bar jump to 0%. Only accept the new value when the
+                        // device gives us something positive.
+                        duration = if (pos.trackDuration > Duration.ZERO) pos.trackDuration else current.duration,
+                        currentUrl = pos.trackUri.ifBlank { current.currentUrl },
                     )
+                    // Throttle polling when paused — there's no position
+                    // advance to track and the user isn't watching the
+                    // slider tick. Saves LAN traffic on long pauses.
+                    val nextDelayMs = if (info.isPlaying || info.isTransitioning) 1_000L
+                        else POLLING_PAUSED_INTERVAL_MS
+                    delay(nextDelayMs)
+                    continue
                 } catch (e: Exception) {
                     // Transient errors are fine — we'll retry at next tick.
                     Timber.v(e, "UPnP polling tick failed")
                 }
                 delay(1.seconds)
             }
+        }
+    }
+
+    /**
+     * Decide whether the polled [reported] position should be accepted as the
+     * new cached position, or whether it's a transient bogus value (Sonos
+     * sometimes reports the pre-seek position or 0:00 for a tick or two
+     * after a Seek SOAP returns 200).
+     *
+     * Strategy: if no recent seek was issued, accept anything. Otherwise
+     * compute the expected position from the seek anchor + elapsed wall time
+     * (only when playing, position doesn't advance while paused) and accept
+     * the reported value if it's within ±SEEK_PLAUSIBILITY_DELTA_MS.
+     */
+    private fun reconcilePosition(
+        reported: Duration,
+        cached: Duration,
+        isPlaying: Boolean,
+    ): Duration {
+        val anchorAge = System.currentTimeMillis() - seekAnchorMs
+        if (anchorAge < 0 || anchorAge > SEEK_PLAUSIBILITY_WINDOW_MS) {
+            // No active anchor → trust the device.
+            return reported
+        }
+        val expectedMs = seekAnchorPosition.inWholeMilliseconds +
+            if (isPlaying) anchorAge else 0L
+        val deltaMs = kotlin.math.abs(reported.inWholeMilliseconds - expectedMs)
+        return if (deltaMs <= SEEK_PLAUSIBILITY_DELTA_MS) {
+            reported
+        } else {
+            // Reject: keep cached (which is the optimistic seek + any
+            // accepted polling advances since then).
+            cached
         }
     }
 
@@ -545,7 +678,22 @@ class UpnpCastController(
     }
 
     private companion object {
+        const val TAG = "UpnpCastController"
         const val MAX_KNOWN = 5
+        // How long after a seek the plausibility filter stays armed (ms).
+        // Sonos typically settles within 1-2 polling ticks; 4 s is a generous
+        // headroom that still lets us trust the device again quickly.
+        const val SEEK_PLAUSIBILITY_WINDOW_MS = 4_000L
+        // How far the polled position may deviate from the expected position
+        // (anchor + elapsed) before we treat it as a bogus transient and
+        // keep the cached value. 2.5 s covers normal LAN latency and the
+        // ~1 s polling resolution while still catching the "back to 0" glitch.
+        const val SEEK_PLAUSIBILITY_DELTA_MS = 2_500L
+        // While the Sonos is paused (or stopped) the polling tick is
+        // throttled to this interval. Lower frequency is fine — the
+        // position isn't advancing — and reduces idle LAN chatter. Restored
+        // to 1 s as soon as playback (or transitioning) resumes.
+        const val POLLING_PAUSED_INTERVAL_MS = 5_000L
     }
 }
 

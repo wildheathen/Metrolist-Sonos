@@ -630,6 +630,8 @@ class MusicService :
                     .distinctUntilChanged(),
             ) { state, enabled -> state to enabled }
                 .collect { (state, enabled) ->
+                    Timber.tag("MusicService")
+                        .i("UPnP observer tick: state=${state::class.simpleName}, enabled=$enabled")
                     if (!enabled) {
                         // Feature off: do not take over playback even if the
                         // controller reports Connected (e.g. dev test screen).
@@ -637,23 +639,31 @@ class MusicService :
                     }
                     when (state) {
                         is com.metrolist.music.upnp.ConnectionState.Connected -> {
+                            Timber.tag("MusicService")
+                                .i("UPnP: Connected → starting primeSonos flow")
                             val up = upnpPlayer ?: UpnpPlayer(
                                 controller = upnpCastController,
                                 scope = scope,
-                                streamUrlProvider = { mediaId -> getStreamUrl(mediaId) },
+                                streamUrlProvider = { mediaId -> getStreamUrl(mediaId, preferAac = true) },
                             ).also { upnpPlayer = it }
 
                             // Transfer the current queue so next/previous stays sensible.
                             val queueItems = (0 until player.mediaItemCount).map { player.getMediaItemAt(it) }
                             val currentIndex = player.currentMediaItemIndex.coerceAtLeast(0)
                             val currentPos = player.currentPosition.coerceAtLeast(0)
+                            Timber.tag("MusicService")
+                                .i("UPnP: queue=${queueItems.size} items, idx=$currentIndex, pos=$currentPos")
 
                             if (queueItems.isNotEmpty()) {
                                 // Prime the Sonos BEFORE swapping so the UI never
                                 // sees an UpnpPlayer whose remote hasn't loaded yet
                                 // (otherwise the player shows "0:00, paused" until
                                 // the SOAP round-trip completes — issue #2 Bug 3).
+                                Timber.tag("MusicService")
+                                    .i("UPnP: calling primeSonos now")
                                 val primed = up.primeSonos(queueItems, currentIndex, currentPos)
+                                Timber.tag("MusicService")
+                                    .i("UPnP: primeSonos returned $primed")
                                 if (!primed) {
                                     Timber.tag("MusicService")
                                         .w("UPnP: priming failed — staying on local player")
@@ -678,6 +688,17 @@ class MusicService :
 
                             // Pause the local player so we don't hear two sources.
                             if (player.isPlaying) player.pause()
+
+                            // Adopt the Sonos's current device volume so the
+                            // app's volume slider reflects the speaker (not
+                            // the previous local-player value). Without this,
+                            // the next slider movement would slam the Sonos
+                            // back to whatever the local player was at —
+                            // commonly 100% — startling the user.
+                            val sonosVol = upnpCastController.playbackState.value.volume
+                            if (sonosVol in 0..100) {
+                                playerVolume.value = sonosVol / 100f
+                            }
 
                             swapActivePlayer(up)
                         }
@@ -864,7 +885,16 @@ class MusicService :
             )
         }.collectLatest(scope) {
             if (!isCrossfading) {
-                player.volume = it
+                // Route volume changes to whichever player currently owns
+                // the MediaSession — when the Sonos cast swap is active that
+                // is UpnpPlayer (which proxies to RenderingControl on the
+                // device), not the original local ExoPlayer.
+                val active: Player = try {
+                    mediaSession.player
+                } catch (_: Exception) {
+                    player
+                }
+                active.volume = it
             }
         }
 
@@ -1534,9 +1564,13 @@ class MusicService :
         // Reset original queue size when starting a new queue
         originalQueueSize = 0
         if (queue.preloadItem != null) {
-            player.setMediaItem(queue.preloadItem!!.toMediaItem())
-            player.prepare()
-            player.playWhenReady = playWhenReady
+            // Preload of the first track must also land on the active player
+            // so a cast swap doesn't immediately get overridden by the local
+            // ExoPlayer's preload starting on the phone.
+            val apPre = activePlayer
+            apPre.setMediaItem(queue.preloadItem!!.toMediaItem())
+            apPre.prepare()
+            apPre.playWhenReady = playWhenReady
         }
         scope.launch(SilentHandler) {
             val initialStatus =
@@ -1552,19 +1586,23 @@ class MusicService :
             if (initialStatus.items.isEmpty()) return@launch
             // Track original queue size for shuffle playlist first feature
             originalQueueSize = initialStatus.items.size
+            // Route queue changes to the active player so a Sonos-cast swap
+            // sees the new selection (otherwise the local ExoPlayer takes
+            // over and the Sonos keeps playing the old track).
+            val ap = activePlayer
             if (queue.preloadItem != null) {
-                player.addMediaItems(
+                ap.addMediaItems(
                     0,
                     initialStatus.items.subList(0, initialStatus.mediaItemIndex)
                 )
-                player.addMediaItems(
+                ap.addMediaItems(
                     initialStatus.items.subList(
                         initialStatus.mediaItemIndex + 1,
                         initialStatus.items.size
                     )
                 )
             } else {
-                player.setMediaItems(
+                ap.setMediaItems(
                     initialStatus.items,
                     if (initialStatus.mediaItemIndex >
                         0
@@ -1575,8 +1613,8 @@ class MusicService :
                     },
                     initialStatus.position,
                 )
-                player.prepare()
-                player.playWhenReady = playWhenReady
+                ap.prepare()
+                ap.playWhenReady = playWhenReady
             }
 
             // Rebuild shuffle order if shuffle is enabled
@@ -1624,16 +1662,17 @@ class MusicService :
                 }
 
                 if (radioItems.isNotEmpty()) {
-                    val itemCount = player.mediaItemCount
+                    val ap = activePlayer
+                    val itemCount = ap.mediaItemCount
 
                     if (itemCount > currentIndex + 1) {
-                        player.removeMediaItems(currentIndex + 1, itemCount)
+                        ap.removeMediaItems(currentIndex + 1, itemCount)
                     }
 
-                    player.addMediaItems(currentIndex + 1, radioItems)
-                    if (player.shuffleModeEnabled) {
+                    ap.addMediaItems(currentIndex + 1, radioItems)
+                    if (ap.shuffleModeEnabled) {
                         val shufflePlaylistFirst = dataStore.get(ShufflePlaylistFirstKey, false)
-                        applyShuffleOrder(player.currentMediaItemIndex, player.mediaItemCount, shufflePlaylistFirst)
+                        applyShuffleOrder(ap.currentMediaItemIndex, ap.mediaItemCount, shufflePlaylistFirst)
                     }
                 }
 
@@ -1656,16 +1695,17 @@ class MusicService :
                                 .filterVideoSongs(dataStore.get(HideVideoSongsKey, false))
 
                             if (radioItems.isNotEmpty()) {
-                                val itemCount = player.mediaItemCount
+                                val ap = activePlayer
+                                val itemCount = ap.mediaItemCount
                                 if (itemCount > currentIndex + 1) {
-                                    player.removeMediaItems(currentIndex + 1, itemCount)
+                                    ap.removeMediaItems(currentIndex + 1, itemCount)
                                 }
-                                player.addMediaItems(currentIndex + 1, radioItems)
-                                if (player.shuffleModeEnabled) {
+                                ap.addMediaItems(currentIndex + 1, radioItems)
+                                if (ap.shuffleModeEnabled) {
                                     val shufflePlaylistFirst = dataStore.get(ShufflePlaylistFirstKey, false)
                                     applyShuffleOrder(
-                                        player.currentMediaItemIndex,
-                                        player.mediaItemCount,
+                                        ap.currentMediaItemIndex,
+                                        ap.mediaItemCount,
                                         shufflePlaylistFirst
                                     )
                                 }
@@ -1780,48 +1820,51 @@ class MusicService :
     }
 
     fun playNext(items: List<MediaItem>) {
+        val ap = activePlayer
         // If queue is empty or player is idle, play immediately instead
-        if (player.mediaItemCount == 0 || player.playbackState == STATE_IDLE) {
-            player.setMediaItems(items)
-            player.prepare()
+        if (ap.mediaItemCount == 0 || ap.playbackState == STATE_IDLE) {
+            ap.setMediaItems(items)
+            ap.prepare()
             // Don't start local playback if casting
             if (castConnectionHandler?.isCasting?.value != true) {
-                player.play()
+                ap.play()
             }
             return
         }
 
-        // Remove duplicates if enabled
+        // Remove duplicates if enabled. Use the active player so queue
+        // changes land on the Sonos when casting.
+        val ap2 = activePlayer
         if (dataStore.get(PreventDuplicateTracksInQueueKey, false)) {
             val itemIds = items.map { it.mediaId }.toSet()
             val indicesToRemove = mutableListOf<Int>()
-            val currentIndex = player.currentMediaItemIndex
+            val currentIndex = ap2.currentMediaItemIndex
 
-            for (i in 0 until player.mediaItemCount) {
-                if (i != currentIndex && player.getMediaItemAt(i).mediaId in itemIds) {
+            for (i in 0 until ap2.mediaItemCount) {
+                if (i != currentIndex && ap2.getMediaItemAt(i).mediaId in itemIds) {
                     indicesToRemove.add(i)
                 }
             }
 
             // Remove from highest index to lowest to maintain index stability
             indicesToRemove.sortedDescending().forEach { index ->
-                player.removeMediaItem(index)
+                ap2.removeMediaItem(index)
             }
         }
 
-        val insertIndex = player.currentMediaItemIndex + 1
-        val shuffleEnabled = player.shuffleModeEnabled
+        val insertIndex = ap2.currentMediaItemIndex + 1
+        val shuffleEnabled = ap2.shuffleModeEnabled
 
         // Insert items immediately after the current item in the window/index space
-        player.addMediaItems(insertIndex, items)
-        player.prepare()
+        ap2.addMediaItems(insertIndex, items)
+        ap2.prepare()
 
         if (shuffleEnabled) {
             // Rebuild shuffle order so that newly inserted items are played next
-            val timeline = player.currentTimeline
+            val timeline = ap2.currentTimeline
             if (!timeline.isEmpty) {
                 val size = timeline.windowCount
-                val currentIndex = player.currentMediaItemIndex
+                val currentIndex = ap2.currentMediaItemIndex
 
                 // Newly inserted indices are a contiguous range [insertIndex, insertIndex + items.size)
                 val newIndices = (insertIndex until (insertIndex + items.size)).toSet()
@@ -1870,30 +1913,31 @@ class MusicService :
     }
 
     fun addToQueue(items: List<MediaItem>) {
+        val ap = activePlayer
         // Remove duplicates if enabled
         if (dataStore.get(PreventDuplicateTracksInQueueKey, false)) {
             val itemIds = items.map { it.mediaId }.toSet()
             val indicesToRemove = mutableListOf<Int>()
-            val currentIndex = player.currentMediaItemIndex
+            val currentIndex = ap.currentMediaItemIndex
 
-            for (i in 0 until player.mediaItemCount) {
-                if (i != currentIndex && player.getMediaItemAt(i).mediaId in itemIds) {
+            for (i in 0 until ap.mediaItemCount) {
+                if (i != currentIndex && ap.getMediaItemAt(i).mediaId in itemIds) {
                     indicesToRemove.add(i)
                 }
             }
 
             // Remove from highest index to lowest to maintain index stability
             indicesToRemove.sortedDescending().forEach { index ->
-                player.removeMediaItem(index)
+                ap.removeMediaItem(index)
             }
         }
 
-        player.addMediaItems(items)
-        if (player.shuffleModeEnabled) {
+        ap.addMediaItems(items)
+        if (ap.shuffleModeEnabled) {
             val shufflePlaylistFirst = dataStore.get(ShufflePlaylistFirstKey, false)
-            applyShuffleOrder(player.currentMediaItemIndex, player.mediaItemCount, shufflePlaylistFirst)
+            applyShuffleOrder(ap.currentMediaItemIndex, ap.mediaItemCount, shufflePlaylistFirst)
         }
-        player.prepare()
+        ap.prepare()
     }
 
     fun toggleLibrary() {
@@ -3375,8 +3419,9 @@ class MusicService :
             }
 
             MusicWidgetReceiver.ACTION_PLAY_PAUSE -> {
-                if (player.isPlaying) player.pause() else player.play()
-                updateWidgetUI(player.isPlaying)
+                val ap = activePlayer
+                if (ap.isPlaying) ap.pause() else ap.play()
+                updateWidgetUI(ap.isPlaying)
             }
 
             MusicWidgetReceiver.ACTION_LIKE -> {
@@ -3384,17 +3429,19 @@ class MusicService :
             }
 
             MusicWidgetReceiver.ACTION_NEXT -> {
-                player.seekToNext()
-                updateWidgetUI(player.isPlaying)
+                val ap = activePlayer
+                ap.seekToNext()
+                updateWidgetUI(ap.isPlaying)
             }
 
             MusicWidgetReceiver.ACTION_PREVIOUS -> {
-                player.seekToPrevious()
-                updateWidgetUI(player.isPlaying)
+                val ap = activePlayer
+                ap.seekToPrevious()
+                updateWidgetUI(ap.isPlaying)
             }
 
             MusicWidgetReceiver.ACTION_UPDATE_WIDGET -> {
-                updateWidgetUI(player.isPlaying)
+                updateWidgetUI(activePlayer.isPlaying)
             }
         }
 
@@ -3545,15 +3592,20 @@ class MusicService :
 
     /**
      * Get the stream URL for a given media ID.
-     * This is used for Google Cast to send the audio URL to Chromecast.
+     * Used for Google Cast (default) and Sonos UPnP cast (preferAac=true).
+     *
+     * @param preferAac when true, force the format selector to pick an
+     *   audio/mp4 (AAC) stream — Sonos does not decode Opus/WebM at all,
+     *   so the local UPnP proxy needs an AAC source to re-serve.
      */
-    suspend fun getStreamUrl(mediaId: String): String? {
+    suspend fun getStreamUrl(mediaId: String, preferAac: Boolean = false): String? {
         return withContext(Dispatchers.IO) {
             try {
                 val playbackData = YTPlayerUtils.playerResponseForPlayback(
                     videoId = mediaId,
                     audioQuality = audioQuality,
                     connectivityManager = connectivityManager,
+                    preferAac = preferAac,
                 ).getOrNull()
                 playbackData?.streamUrl
             } catch (e: Exception) {
@@ -3578,6 +3630,25 @@ class MusicService :
      * (playbackState, currentMediaItem, mediaMetadata, queue) automatically
      * re-read from the new player.
      */
+    /**
+     * Returns the [Player] currently exposed via the MediaSession — this is
+     * the [UpnpPlayer] when a Sonos cast is active, otherwise the local
+     * ExoPlayer. Use this anywhere a *user-facing* playback command needs to
+     * land on whatever device is currently in charge of audio (queue changes,
+     * track selection, seek). Falls back to the local ExoPlayer if the
+     * MediaSession has no player yet (very early boot).
+     *
+     * Do NOT use this for ExoPlayer-specific operations like volume hardware,
+     * audio sink swaps, or equalizer rewiring — those only make sense on the
+     * local player.
+     */
+    private val activePlayer: Player
+        get() = try {
+            mediaSession.player
+        } catch (_: Exception) {
+            player
+        }
+
     private fun swapActivePlayer(newPlayer: Player) {
         val currentInSession: Player? = try {
             mediaSession.player

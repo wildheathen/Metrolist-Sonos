@@ -195,6 +195,10 @@ class UpnpPlayer(
         scope.launch {
             val wantsDifferentItem = mediaItemIndex != currentIndex &&
                 mediaItemIndex in items.indices
+            Timber.i(
+                "handleSeek: idx=%d->%d, posMs=%d, cmd=%d, wantsDifferent=%s",
+                currentIndex, mediaItemIndex, positionMs, seekCommand, wantsDifferentItem,
+            )
             if (wantsDifferentItem) {
                 currentIndex = mediaItemIndex
                 resetNextPreload()
@@ -328,6 +332,11 @@ class UpnpPlayer(
      */
     private suspend fun maybePreloadNext(pb: PlaybackState) {
         if (!connected) return
+        // Don't issue SetNextAVTransportURI mid-seek — Sonos's transport state
+        // is in flux and the SOAP call can confuse it (SOAP 718 occasionally,
+        // or the next-URI getting silently dropped). Wait until the seek
+        // settles before considering preload again.
+        if (controller.isSeekActive()) return
         val durMs = pb.duration.inWholeMilliseconds
         val posMs = pb.position.inWholeMilliseconds
         if (durMs <= 0 || posMs <= 0) return
@@ -392,12 +401,27 @@ class UpnpPlayer(
         val artistText = meta.artist?.toString().orEmpty()
         val albumText = meta.albumTitle?.toString().orEmpty()
         val artUrl = meta.artworkUri?.toString().orEmpty()
+        // Pull the track duration from the Metrolist MediaMetadata tag
+        // attached to the MediaItem (set in MediaItemExt.toMediaItem). The
+        // local field is in seconds — convert to ms. Without this, Sonos
+        // never learns the track length and the in-app player UI shows
+        // "--:--" with no seek bar the user can scrub.
+        val tagMeta = item.localConfiguration?.tag as?
+            com.metrolist.music.models.MediaMetadata
+        val durationMs = tagMeta?.duration
+            ?.takeIf { it > 0 }
+            ?.let { it.toLong() * 1000L }
+        Timber.i(
+            "tryLoadForCurrent: mediaId=%s title=%s tagPresent=%s tagDurationSec=%s",
+            mediaId, titleText.take(40), tagMeta != null, tagMeta?.duration?.toString() ?: "n/a",
+        )
         val ok = controller.loadMedia(
             url = url,
             title = titleText.ifBlank { "Metrolist" },
             artist = artistText,
             album = albumText,
             albumArtUrl = artUrl,
+            durationMs = durationMs,
         )
         if (ok && startOffsetMs > 0) {
             try {

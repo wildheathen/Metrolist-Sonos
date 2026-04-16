@@ -145,11 +145,49 @@ object AppModule {
     fun provideUpnpCastController(
         @ApplicationContext context: Context,
         @UpnpHttpClient httpClient: HttpClient,
-    ): UpnpCastController = UpnpCastController(context, httpClient)
+        proxy: com.metrolist.music.upnp.SonosHttpProxy,
+    ): UpnpCastController = UpnpCastController(context, httpClient, proxy)
+
+    @Singleton
+    @Provides
+    fun provideSonosHttpProxy(
+        @SonosProxyHttpClient httpClient: HttpClient,
+    ): com.metrolist.music.upnp.SonosHttpProxy =
+        com.metrolist.music.upnp.SonosHttpProxy(httpClient)
+
+    /**
+     * Dedicated HTTP client for the SonosHttpProxy upstream fetcher. Unlike
+     * the regular UPnP client (5 s timeouts for SOAP control calls), this
+     * one streams audio for entire tracks — could easily run several minutes
+     * with the connection idle while the Sonos buffers. We keep a generous
+     * connect timeout but leave request/socket timeouts unbounded so the
+     * stream isn't killed mid-track.
+     */
+    @Singleton
+    @Provides
+    @SonosProxyHttpClient
+    fun provideSonosProxyHttpClient(): HttpClient = HttpClient(CIO) {
+        engine {
+            requestTimeout = 0L // no per-request overall timeout
+        }
+        install(HttpTimeout) {
+            connectTimeoutMillis = 10_000L
+            // Leave both request and socket timeouts effectively infinite
+            // so a slow Sonos sipping bytes for a 5-minute track doesn't
+            // trip the killer coroutine.
+            requestTimeoutMillis = Long.MAX_VALUE
+            socketTimeoutMillis = Long.MAX_VALUE
+        }
+    }
 }
 
 /** Qualifier for the Ktor HttpClient used by the UPnP / Sonos integration. */
 @Qualifier
 @Retention(AnnotationRetention.BINARY)
 annotation class UpnpHttpClient
+
+/** Qualifier for the long-lived HttpClient used to stream upstream bytes to Sonos. */
+@Qualifier
+@Retention(AnnotationRetention.BINARY)
+annotation class SonosProxyHttpClient
 

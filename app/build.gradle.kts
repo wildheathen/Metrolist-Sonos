@@ -278,6 +278,12 @@ dependencies {
     implementation(libs.ktor.client.content.negotiation)
     implementation(libs.ktor.serialization.json)
 
+    // Embedded HTTP server for Sonos UPnP cast proxy. Sonos rejects YouTube
+    // googlevideo URLs directly (Content-Type video/mp4 → SOAP 714 Illegal
+    // MIME-Type) — we re-serve the bytes locally with audio/mp4.
+    implementation(libs.ktor.server.core)
+    implementation(libs.ktor.server.cio)
+
     // Protobuf for message serialization (lite version for Android)
     implementation(libs.protobuf.javalite)
     implementation(libs.protobuf.kotlin.lite)
